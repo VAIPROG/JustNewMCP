@@ -31,6 +31,7 @@ async function readGitStatus(workspaceDir: string): Promise<string | null> {
         stderr: "pipe",
         env: {
           ...process.env,
+          GIT_OPTIONAL_LOCKS: "0",
           GIT_TERMINAL_PROMPT: "0",
           GIT_CONFIG_NOSYSTEM: "1",
         },
