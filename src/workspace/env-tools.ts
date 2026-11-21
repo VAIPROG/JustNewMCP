@@ -41,24 +41,26 @@ function parseEnvLine(line: string): { key: string; value: string } | null {
   ) {
     value = value.slice(1, -1);
   }
+  value = value.replaceAll("\\$", "$");
   return { key, value };
 }
 
 function formatEnvValue(value: string): string {
-  if (/[\r\n]/.test(value)) {
-    const escaped = value
+  const withEscapedDollar = value.replaceAll("$", "\\$");
+  if (/[\r\n]/.test(withEscapedDollar)) {
+    const escaped = withEscapedDollar
       .replaceAll('"', '\\"')
       .replaceAll("\r", "\\r")
       .replaceAll("\n", "\\n");
     return `"${escaped}"`;
   }
   if (!/[\s#"'`$]/.test(value)) {
-    return value;
+    return withEscapedDollar;
   }
-  if (!value.includes("'")) {
-    return `'${value}'`;
+  if (!withEscapedDollar.includes("'")) {
+    return `'${withEscapedDollar}'`;
   }
-  return `"${value.replaceAll('"', '\\"')}"`;
+  return `"${withEscapedDollar.replaceAll('"', '\\"')}"`;
 }
 
 export async function readAvailableEnvsTool(

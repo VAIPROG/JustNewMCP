@@ -151,6 +151,38 @@ describe("filesystem tools and local checkpoints", () => {
     const parsedAfter = await readAvailableEnvsTool(workspaceDir, DEFAULT_DENIED_PATH_PATTERNS, ".env");
     const winVar = parsedAfter.variables.find((v) => v.name === "WIN_PATH");
     expect(winVar?.valueLength).toBe("C:\\Users\\alice\\My App".length);
+
+    // Literal dollar signs must not expand via Bun dotenv loader
+    const dollarEdit = await setEnvVarTool(workspaceDir, DEFAULT_DENIED_PATH_PATTERNS, {
+      path: ".env",
+      key: "PASS_DOLLAR",
+      value: "abc$HOME",
+    });
+    const envCheck = Bun.spawnSync(
+      [
+        process.execPath,
+        `--env-file=${join(workspaceDir, ".env")}`,
+        "-e",
+        "console.log(JSON.stringify({w:process.env.WIN_PATH,d:process.env.PASS_DOLLAR}))",
+      ],
+      { stdout: "pipe", stderr: "pipe" },
+    );
+    expect(envCheck.exitCode).toBe(0);
+    const loaded = JSON.parse(envCheck.stdout.toString().trim()) as { w: string; d: string };
+    expect(loaded.w).toBe("C:\\Users\\alice\\My App");
+    expect(loaded.d).toBe("abc$HOME");
+
+    // Calling grep_files or glob_files rooted directly at .justnewmcp must still block checkpoint snapshots
+    const metaDir = join(workspaceDir, ".justnewmcp");
+    const grepFromMeta = await grepFilesTool(metaDir, DEFAULT_DENIED_PATH_PATTERNS, {
+      pattern: "secret",
+      mode: "content",
+    });
+    expect(grepFromMeta.matches).toEqual([]);
+    const globFromMeta = await globFilesTool(metaDir, DEFAULT_DENIED_PATH_PATTERNS, "**/*");
+    expect(globFromMeta.files.some((f) => f.includes("snapshot.bin"))).toBe(false);
+
+    await rewindCheckpoint(workspaceDir, dollarEdit.checkpointId, DEFAULT_DENIED_PATH_PATTERNS);
     await rewindCheckpoint(workspaceDir, winPathEdit.checkpointId, DEFAULT_DENIED_PATH_PATTERNS);
     await rewindCheckpoint(workspaceDir, added.checkpointId, DEFAULT_DENIED_PATH_PATTERNS);
 

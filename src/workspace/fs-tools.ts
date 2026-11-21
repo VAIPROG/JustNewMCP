@@ -261,7 +261,8 @@ export async function globFilesTool(
 
     try {
       const fullPath = join(workspaceRoot, rawRel);
-      const { resolvedPath } = resolveInsideRoots(fullPath, [workspaceRoot], process.platform, deniedPatterns);
+      const combinedDenied = [...deniedPatterns, ...INTERNAL_PROTECTED_PATTERNS];
+      const { resolvedPath } = resolveInsideRoots(fullPath, [workspaceRoot], process.platform, combinedDenied);
       const stat = statSync(resolvedPath);
       if (!stat.isFile()) continue;
       candidates.push({ rel: relPosix, mtimeMs: stat.mtimeMs });
@@ -313,7 +314,8 @@ export async function grepFilesTool(
     let resolvedPath: string;
     try {
       const fullPath = join(workspaceRoot, rawRel);
-      const res = resolveInsideRoots(fullPath, [workspaceRoot], process.platform, deniedPatterns);
+      const combinedDenied = [...deniedPatterns, ...INTERNAL_PROTECTED_PATTERNS];
+      const res = resolveInsideRoots(fullPath, [workspaceRoot], process.platform, combinedDenied);
       resolvedPath = res.resolvedPath;
       const stat = statSync(resolvedPath);
       if (!stat.isFile() || stat.size > MAX_READ_FILE_BYTES) continue;
