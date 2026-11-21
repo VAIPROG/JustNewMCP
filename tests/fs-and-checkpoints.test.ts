@@ -132,6 +132,34 @@ describe("filesystem tools and local checkpoints", () => {
     expect(existsSync(join(workspaceDir, "src", "nested", "new-file.ts"))).toBe(false);
   });
 
+  test("blocks dangling symlinks, symlinked parents to denied files, and symlinked checkpoint dirs", async () => {
+    const tracker = new Set<string>();
+
+    // 1. Dangling symlink pointing to non-existent file outside workspace
+    const danglingLink = join(workspaceDir, "dangling-escape.txt");
+    symlinkSync(join(outsideDir, "created-via-dangling.txt"), danglingLink);
+    await expect(
+      writeFileTool(workspaceDir, DEFAULT_DENIED_PATH_PATTERNS, tracker, "dangling-escape.txt", "pwn"),
+    ).rejects.toThrow("dangling symlink");
+    expect(existsSync(join(outsideDir, "created-via-dangling.txt"))).toBe(false);
+
+    // 2. In-workspace symlink alias to .git directory
+    mkdirSync(join(workspaceDir, ".git"), { recursive: true });
+    writeFileSync(join(workspaceDir, ".git", "config"), "[core]\n", "utf8");
+    symlinkSync(join(workspaceDir, ".git"), join(workspaceDir, "git-alias"));
+    await expect(
+      writeFileTool(workspaceDir, DEFAULT_DENIED_PATH_PATTERNS, tracker, "git-alias/config", "[core]\nfsmonitor=evil\n"),
+    ).rejects.toThrow("blocked by security policy");
+
+    // 3. Symlinked .justnewmcp/checkpoints directory pointing outside workspace
+    const isolatedRepo = join(baseDir, "symlink-cp-repo");
+    mkdirSync(join(isolatedRepo, ".justnewmcp"), { recursive: true });
+    symlinkSync(outsideDir, join(isolatedRepo, ".justnewmcp", "checkpoints"));
+    await expect(
+      writeFileTool(isolatedRepo, DEFAULT_DENIED_PATH_PATTERNS, tracker, "hello.txt", "hi"),
+    ).rejects.toThrow("must not be a symlink");
+  });
+
   test("glob_files and grep_files skip node_modules, .env, binaries, and symlink escapes", async () => {
     const globRes = await globFilesTool(workspaceDir, DEFAULT_DENIED_PATH_PATTERNS, "**/*");
     expect(globRes.files).toContain("src/app.ts");

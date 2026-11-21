@@ -1,7 +1,7 @@
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { dirname, join, relative } from "node:path";
+import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { dirname, join, relative, resolve } from "node:path";
 import { generateRandomToken } from "../security/crypto.ts";
-import { resolveWritablePathInsideRoot } from "./paths.ts";
+import { isPathInsideRoot, resolveWritablePathInsideRoot } from "./paths.ts";
 
 export interface CheckpointMeta {
   id: string;
@@ -17,8 +17,39 @@ const MAX_CHECKPOINTS = 100;
 const MAX_SNAPSHOT_BYTES = 5 * 1024 * 1024;
 const CHECKPOINT_ID_RE = /^[A-Za-z0-9_-]{8,64}$/;
 
-function getCheckpointsRoot(workspaceRoot: string): string {
-  return join(workspaceRoot, CHECKPOINTS_REL_DIR);
+function assertNotSymlink(targetPath: string): void {
+  try {
+    if (lstatSync(targetPath).isSymbolicLink()) {
+      throw new Error(`Checkpoint directory "${targetPath}" must not be a symlink.`);
+    }
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
+      throw err;
+    }
+  }
+}
+
+function getCheckpointsRoot(workspaceRoot: string, create = false): string {
+  const realWorkspace = realpathSync(resolve(workspaceRoot));
+  const metaDir = join(realWorkspace, ".justnewmcp");
+  const checkpointsRoot = join(realWorkspace, CHECKPOINTS_REL_DIR);
+
+  assertNotSymlink(metaDir);
+  assertNotSymlink(checkpointsRoot);
+
+  if (create) {
+    mkdirSync(checkpointsRoot, { recursive: true });
+  }
+
+  if (existsSync(checkpointsRoot)) {
+    const realCheckpoints = realpathSync(checkpointsRoot);
+    if (!isPathInsideRoot(realCheckpoints, realWorkspace)) {
+      throw new Error("Checkpoint directory resolves outside the active workspace.");
+    }
+    return realCheckpoints;
+  }
+
+  return checkpointsRoot;
 }
 
 function pruneOldCheckpoints(checkpointsRoot: string): void {
@@ -48,8 +79,7 @@ export async function createCheckpoint(
   resolvedTargetPath: string,
   reason: string,
 ): Promise<CheckpointMeta> {
-  const checkpointsRoot = getCheckpointsRoot(workspaceRoot);
-  mkdirSync(checkpointsRoot, { recursive: true });
+  const checkpointsRoot = getCheckpointsRoot(workspaceRoot, true);
 
   const id = `cp_${Date.now().toString(36)}_${generateRandomToken(6)}`;
   const cpDir = join(checkpointsRoot, id);

@@ -98,11 +98,24 @@ export function resolveWritablePathInsideRoot(
     throw new Error(`Path "${inputPath}" is blocked by security policy.`);
   }
 
-  // If the target exists (including dangling symlinks), resolve and verify its real target
-  if (existsSync(candidate)) {
-    const stat = lstatSync(candidate);
-    if (stat.isSymbolicLink()) {
-      const realTarget = realpathSync(candidate);
+  // Use lstatSync so dangling symlinks are detected instead of being treated as absent files
+  let targetLstat: ReturnType<typeof lstatSync> | null = null;
+  try {
+    targetLstat = lstatSync(candidate);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
+      throw err;
+    }
+  }
+
+  if (targetLstat) {
+    if (targetLstat.isSymbolicLink()) {
+      let realTarget: string;
+      try {
+        realTarget = realpathSync(candidate);
+      } catch {
+        throw new Error(`Refusing to write through dangling symlink "${inputPath}".`);
+      }
       if (!isPathInsideRoot(realTarget, realRoot, platform)) {
         throw new Error(`Symlink "${inputPath}" resolves outside the active workspace.`);
       }
@@ -114,6 +127,9 @@ export function resolveWritablePathInsideRoot(
     const realTarget = realpathSync(candidate);
     if (!isPathInsideRoot(realTarget, realRoot, platform)) {
       throw new Error(`Path "${inputPath}" resolves outside the active workspace.`);
+    }
+    if (isPathDenied(realTarget, combinedDenied, platform)) {
+      throw new Error(`Path "${inputPath}" is blocked by security policy.`);
     }
     return realTarget;
   }
