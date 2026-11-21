@@ -41,13 +41,27 @@ function escapeHtml(value: string): string {
     .replaceAll("'", "&#39;");
 }
 
-export function extractClientIp(req: Request): string {
+function normalizeIp(ip: string): string {
+  return ip.startsWith("::ffff:") ? ip.slice(7) : ip;
+}
+
+export function extractClientIp(
+  req: Request,
+  peerIp = "127.0.0.1",
+  trustedProxies: string[] = [],
+): string {
+  const normalizedPeer = normalizeIp(peerIp);
+  const isTrustedProxy = trustedProxies.some((proxy) => normalizeIp(proxy) === normalizedPeer);
+  if (!isTrustedProxy) {
+    return normalizedPeer;
+  }
+
   const forwarded = req.headers.get("cf-connecting-ip") ?? req.headers.get("x-forwarded-for");
   if (forwarded) {
     const first = forwarded.split(",")[0]?.trim();
-    if (first) return first;
+    if (first) return normalizeIp(first);
   }
-  return "127.0.0.1";
+  return normalizedPeer;
 }
 
 function parseCookie(header: string | null, name: string): string | null {
@@ -90,21 +104,31 @@ export function isAllowedRedirectUri(redirectUri: string, allowlist: string[]): 
   });
 }
 
+export interface OAuthServerOptions {
+  audit?: AuditLogger;
+  initialApprovalCode?: string;
+  onApprovalCodeRotated?: (code: string) => void;
+}
+
 export class OAuthServer {
   private readonly rateLimiter: IpRateLimiter;
+  private readonly audit: AuditLogger;
+  private readonly onApprovalCodeRotated?: (code: string) => void;
   private readonly authCodes = new Map<string, AuthCodeRecord>();
   private readonly accessTokens = new Map<string, TokenRecord>();
   private readonly refreshTokens = new Map<string, TokenRecord>();
   private readonly csrfTokens = new Map<string, CsrfRecord>();
   private approvalCode: string;
 
-  constructor(
-    private readonly config: AppConfig,
-    private readonly audit: AuditLogger = new AuditLogger(),
-    initialApprovalCode?: string,
-  ) {
+  constructor(private readonly config: AppConfig, options: OAuthServerOptions = {}) {
     this.rateLimiter = new IpRateLimiter(config.oauth.rateLimit);
-    this.approvalCode = initialApprovalCode ?? generateApprovalCode();
+    this.audit = options.audit ?? new AuditLogger();
+    this.onApprovalCodeRotated = options.onApprovalCodeRotated;
+    this.approvalCode = options.initialApprovalCode ?? generateApprovalCode();
+  }
+
+  private resolveIp(req: Request, peerIp?: string): string {
+    return extractClientIp(req, peerIp ?? "127.0.0.1", this.config.trustedProxies);
   }
 
   private pruneExpired(now = Date.now()): void {
@@ -128,6 +152,7 @@ export class OAuthServer {
 
   rotateApprovalCode(): string {
     this.approvalCode = generateApprovalCode();
+    this.onApprovalCodeRotated?.(this.approvalCode);
     return this.approvalCode;
   }
 
@@ -222,9 +247,9 @@ export class OAuthServer {
     });
   }
 
-  async handleAuthorizePost(req: Request): Promise<Response> {
+  async handleAuthorizePost(req: Request, peerIp?: string): Promise<Response> {
     this.pruneExpired();
-    const ip = extractClientIp(req);
+    const ip = this.resolveIp(req, peerIp);
     const gate = this.rateLimiter.check(ip);
     if (!gate.allowed) {
       this.audit.record("oauth.rate_limited", ip, { detail: "authorize" });
@@ -334,9 +359,9 @@ export class OAuthServer {
     return { ok: valid, clientId };
   }
 
-  async handleToken(req: Request): Promise<Response> {
+  async handleToken(req: Request, peerIp?: string): Promise<Response> {
     this.pruneExpired();
-    const ip = extractClientIp(req);
+    const ip = this.resolveIp(req, peerIp);
     const gate = this.rateLimiter.check(ip);
     if (!gate.allowed) {
       this.audit.record("oauth.rate_limited", ip, { detail: "token" });
@@ -411,9 +436,9 @@ export class OAuthServer {
     return Response.json({ error: "unsupported_grant_type" }, { status: 400 });
   }
 
-  async handleRevoke(req: Request): Promise<Response> {
+  async handleRevoke(req: Request, peerIp?: string): Promise<Response> {
     this.pruneExpired();
-    const ip = extractClientIp(req);
+    const ip = this.resolveIp(req, peerIp);
     const gate = this.rateLimiter.check(ip);
     if (!gate.allowed) {
       return Response.json(
@@ -471,9 +496,12 @@ export class OAuthServer {
     );
   }
 
-  authenticateBearer(req: Request): { ok: true; clientId: string; scope: string } | { ok: false; response: Response } {
+  authenticateBearer(
+    req: Request,
+    peerIp?: string,
+  ): { ok: true; clientId: string; scope: string; ip: string } | { ok: false; response: Response } {
     this.pruneExpired();
-    const ip = extractClientIp(req);
+    const ip = this.resolveIp(req, peerIp);
     const gate = this.rateLimiter.check(ip);
     if (!gate.allowed) {
       this.audit.record("oauth.rate_limited", ip, { detail: "mcp_bearer" });
@@ -493,7 +521,7 @@ export class OAuthServer {
     if (token) {
       const record = this.accessTokens.get(sha256Hex(token));
       if (record && record.expiresAt > Date.now()) {
-        return { ok: true, clientId: record.clientId, scope: record.scope };
+        return { ok: true, clientId: record.clientId, scope: record.scope, ip };
       }
     }
 

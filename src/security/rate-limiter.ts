@@ -45,6 +45,10 @@ export class IpRateLimiter {
         retryAfterSec: Math.max(1, Math.ceil((bucket.lockedUntil - now) / 1000)),
       };
     }
+    const staleCutoff = now - Math.max(this.opts.windowMs, this.opts.lockoutMs);
+    if (bucket.lastSeen < staleCutoff) {
+      this.buckets.delete(ip);
+    }
     return { allowed: true, retryAfterSec: 0 };
   }
 

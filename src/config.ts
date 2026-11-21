@@ -40,6 +40,7 @@ export const ConfigSchema = z.object({
   host: z.string().default("127.0.0.1"),
   port: z.number().int().min(0).max(65535).default(8787),
   publicUrl: z.string().url().transform((u) => u.replace(/\/+$/, "")),
+  trustedProxies: z.array(z.string().min(1)).default([]),
   allowedRoots: z.array(z.string().min(1)).min(1),
   deniedPathPatterns: z.array(z.string().min(1)).default(DEFAULT_DENIED_PATH_PATTERNS),
   maxMcpBodyBytes: z.number().int().min(1024).default(1_048_576),
@@ -63,6 +64,9 @@ export function loadConfig(configPath?: string): AppConfig {
     host: process.env.JUSTNEWMCP_HOST ?? raw.host,
     port: process.env.JUSTNEWMCP_PORT ? Number(process.env.JUSTNEWMCP_PORT) : raw.port,
     publicUrl: process.env.JUSTNEWMCP_PUBLIC_URL ?? raw.publicUrl,
+    trustedProxies: process.env.JUSTNEWMCP_TRUSTED_PROXIES
+      ? process.env.JUSTNEWMCP_TRUSTED_PROXIES.split(",").map((s) => s.trim()).filter(Boolean)
+      : raw.trustedProxies,
     allowedRoots: process.env.JUSTNEWMCP_ALLOWED_ROOTS
       ? process.env.JUSTNEWMCP_ALLOWED_ROOTS.split(",").map((s) => s.trim()).filter(Boolean)
       : raw.allowedRoots,

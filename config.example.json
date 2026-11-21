@@ -2,6 +2,10 @@
   "host": "127.0.0.1",
   "port": 8787,
   "publicUrl": "https://mcp.example.com",
+  "trustedProxies": [
+    "127.0.0.1",
+    "::1"
+  ],
   "allowedRoots": [
     "/home/user/projects",
     "C:\\Users\\user\\projects"

@@ -1,6 +1,5 @@
 import { z } from "zod";
 import type { AppConfig } from "../config.ts";
-import { extractClientIp } from "../oauth/server.ts";
 import { AuditLogger } from "../security/audit.ts";
 import { readBodyWithinLimit } from "../security/headers.ts";
 import { initializeWorkspace, type WorkspaceState } from "../workspace/init.ts";
@@ -27,7 +26,7 @@ export class McpRouter {
     private readonly audit: AuditLogger = new AuditLogger(),
   ) {}
 
-  async handleRequest(req: Request, clientId: string): Promise<Response> {
+  async handleRequest(req: Request, clientId: string, ip: string): Promise<Response> {
     const contentType = req.headers.get("content-type") ?? "";
     if (!contentType.toLowerCase().includes("application/json")) {
       return Response.json(
@@ -50,7 +49,6 @@ export class McpRouter {
     }
 
     const id = payload.id ?? null;
-    const ip = extractClientIp(req);
 
     if (payload.method === "initialize") {
       return Response.json({
@@ -116,6 +114,7 @@ export class McpRouter {
             parsed.path,
             this.config.allowedRoots,
             this.workspaceState,
+            this.config.deniedPathPatterns,
           );
           this.audit.record("mcp.tool.called", ip, { clientId, detail: "workspace_init" });
           return Response.json({

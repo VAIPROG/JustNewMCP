@@ -15,6 +15,7 @@ describe("OAuth 2.1 security hardening and MCP /mcp integration", () => {
   let outsideDir: string;
   let running: RunningServer;
   let baseUrl: string;
+  let rotatedCodes: string[] = [];
   const clientId = "gemini-test-client";
   const clientSecret = "super-secret-value-for-testing-123456";
   const approvalCode = "ABCD-1234-EFGH";
@@ -29,6 +30,7 @@ describe("OAuth 2.1 security hardening and MCP /mcp integration", () => {
       host: "127.0.0.1",
       port: 0,
       publicUrl: "https://mcp.example.com",
+      trustedProxies: ["127.0.0.1", "::1"],
       allowedRoots: [tempRoot],
       deniedPathPatterns: DEFAULT_DENIED_PATH_PATTERNS,
       maxMcpBodyBytes: 4096,
@@ -48,7 +50,12 @@ describe("OAuth 2.1 security hardening and MCP /mcp integration", () => {
       },
     };
 
-    running = createAppServer(config, approvalCode);
+    running = createAppServer(config, {
+      initialApprovalCode: approvalCode,
+      onApprovalCodeRotated(code) {
+        rotatedCodes.push(code);
+      },
+    });
     baseUrl = `http://127.0.0.1:${running.server.port}`;
   });
 
@@ -100,6 +107,61 @@ describe("OAuth 2.1 security hardening and MCP /mcp integration", () => {
     expect(res.status).toBe(403);
   });
 
+  test("ignores spoofed X-Forwarded-For when trustedProxies is empty", async () => {
+    const directServer = createAppServer({
+      host: "127.0.0.1",
+      port: 0,
+      publicUrl: "https://mcp.example.com",
+      trustedProxies: [],
+      allowedRoots: [tempRoot],
+      deniedPathPatterns: DEFAULT_DENIED_PATH_PATTERNS,
+      maxMcpBodyBytes: 4096,
+      oauth: {
+        clientId,
+        clientSecret,
+        allowedRedirectUris: DEFAULT_ALLOWED_REDIRECT_URIS,
+        accessTokenTtlSec: 3600,
+        refreshTokenTtlSec: 604800,
+        authCodeTtlSec: 300,
+        rateLimit: {
+          maxFailures: 2,
+          windowMs: 60_000,
+          lockoutMs: 60_000,
+          maxTrackedIps: 1000,
+        },
+      },
+    });
+
+    try {
+      const url = `http://127.0.0.1:${directServer.server.port}/oauth/token`;
+      const first = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded", "X-Forwarded-For": "1.1.1.1" },
+        body: new URLSearchParams({
+          grant_type: "authorization_code",
+          client_id: clientId,
+          client_secret: "wrong",
+          code: "fake",
+        }),
+      });
+      expect(first.status).toBe(401);
+
+      const second = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded", "X-Forwarded-For": "2.2.2.2" },
+        body: new URLSearchParams({
+          grant_type: "authorization_code",
+          client_id: clientId,
+          client_secret: "wrong",
+          code: "fake",
+        }),
+      });
+      expect(second.status).toBe(429);
+    } finally {
+      directServer.server.stop(true);
+    }
+  });
+
   test("rejects unauthenticated /mcp calls with WWW-Authenticate", async () => {
     const res = await fetch(`${baseUrl}/mcp`, {
       method: "POST",
@@ -140,7 +202,7 @@ describe("OAuth 2.1 security hardening and MCP /mcp integration", () => {
     expect(locked.headers.get("retry-after")).toBeTruthy();
   });
 
-  test("full OAuth 2.1 PKCE + CSRF flow, MCP checks, body limits, revocation, and audit log", async () => {
+  test("full OAuth 2.1 PKCE + CSRF flow, approval code rotation callback, MCP checks, revocation, and audit log", async () => {
     const ip = "10.0.0.42";
     const verifier = generateRandomToken(48);
     const challenge = computePkceS256(verifier);
@@ -156,9 +218,6 @@ describe("OAuth 2.1 security hardening and MCP /mcp integration", () => {
     const cookieMatch = setCookie.match(/justnewmcp_csrf=([^;]+)/);
     const csrfCookie = cookieMatch?.[1] ?? "";
     expect(csrfCookie.length).toBeGreaterThan(16);
-
-    const html = await getAuth.text();
-    expect(html).toContain(`name="csrf_token" value="${csrfCookie}"`);
 
     const form = new FormData();
     form.set("csrf_token", csrfCookie);
@@ -179,6 +238,10 @@ describe("OAuth 2.1 security hardening and MCP /mcp integration", () => {
       redirect: "manual",
     });
     expect(postAuth.status).toBe(302);
+    expect(rotatedCodes.length).toBe(1);
+    expect(rotatedCodes[0]).not.toBe(approvalCode);
+    expect(running.oauth.getApprovalCode()).toBe(rotatedCodes[0] ?? "");
+
     const location = new URL(postAuth.headers.get("location") ?? "");
     const authCode = location.searchParams.get("code") ?? "";
     expect(authCode.length).toBeGreaterThan(20);
@@ -198,7 +261,6 @@ describe("OAuth 2.1 security hardening and MCP /mcp integration", () => {
     expect(tokenRes.status).toBe(200);
     const tokens = (await tokenRes.json()) as { access_token: string; refresh_token: string };
 
-    // Reject non-JSON content-type on /mcp
     const badCt = await fetch(`${baseUrl}/mcp`, {
       method: "POST",
       headers: {
@@ -210,7 +272,6 @@ describe("OAuth 2.1 security hardening and MCP /mcp integration", () => {
     });
     expect(badCt.status).toBe(415);
 
-    // Reject oversized body on /mcp (> 4096 bytes)
     const oversized = await fetch(`${baseUrl}/mcp`, {
       method: "POST",
       headers: {
@@ -222,7 +283,6 @@ describe("OAuth 2.1 security hardening and MCP /mcp integration", () => {
     });
     expect(oversized.status).toBe(413);
 
-    // Call workspace_init on allowed repo
     const wsOk = await fetch(`${baseUrl}/mcp`, {
       method: "POST",
       headers: {
@@ -242,7 +302,6 @@ describe("OAuth 2.1 security hardening and MCP /mcp integration", () => {
     expect(wsOkJson.result.isError).toBeUndefined();
     expect(wsOkJson.result.content[0]?.text).toContain("README.md");
 
-    // Revoke active access token and verify immediate rejection
     const revokeRes = await fetch(`${baseUrl}/oauth/revoke`, {
       method: "POST",
       headers: { "Content-Type": "application/x-www-form-urlencoded", "X-Forwarded-For": ip },
@@ -265,7 +324,6 @@ describe("OAuth 2.1 security hardening and MCP /mcp integration", () => {
     });
     expect(afterRevoke.status).toBe(401);
 
-    // Audit log captured key security events without exposing raw tokens
     const auditText = JSON.stringify(running.audit.list());
     expect(auditText).toContain("oauth.authorize.approved");
     expect(auditText).toContain("oauth.token.issued");

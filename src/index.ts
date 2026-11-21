@@ -12,17 +12,27 @@ export interface RunningServer {
   audit: AuditLogger;
 }
 
-export function createAppServer(config: AppConfig, initialApprovalCode?: string): RunningServer {
+export interface CreateServerOptions {
+  initialApprovalCode?: string;
+  onApprovalCodeRotated?: (code: string) => void;
+}
+
+export function createAppServer(config: AppConfig, options: CreateServerOptions = {}): RunningServer {
   ensureBunVersion("1.4.0");
   const audit = new AuditLogger();
-  const oauth = new OAuthServer(config, audit, initialApprovalCode);
+  const oauth = new OAuthServer(config, {
+    audit,
+    initialApprovalCode: options.initialApprovalCode,
+    onApprovalCodeRotated: options.onApprovalCodeRotated,
+  });
   const mcp = new McpRouter(config, audit);
 
   const server = Bun.serve({
     hostname: config.host,
     port: config.port,
-    async fetch(req: Request): Promise<Response> {
+    async fetch(req: Request, bunServer): Promise<Response> {
       const url = new URL(req.url);
+      const peerIp = bunServer.requestIP(req)?.address ?? "127.0.0.1";
       let res: Response;
 
       if (req.method === "GET" && url.pathname === "/health") {
@@ -34,14 +44,14 @@ export function createAppServer(config: AppConfig, initialApprovalCode?: string)
       } else if (url.pathname === "/oauth/authorize" && req.method === "GET") {
         res = await oauth.handleAuthorizeGet(req);
       } else if (url.pathname === "/oauth/authorize" && req.method === "POST") {
-        res = await oauth.handleAuthorizePost(req);
+        res = await oauth.handleAuthorizePost(req, peerIp);
       } else if (req.method === "POST" && url.pathname === "/oauth/token") {
-        res = await oauth.handleToken(req);
+        res = await oauth.handleToken(req, peerIp);
       } else if (req.method === "POST" && url.pathname === "/oauth/revoke") {
-        res = await oauth.handleRevoke(req);
+        res = await oauth.handleRevoke(req, peerIp);
       } else if (req.method === "POST" && url.pathname === "/mcp") {
-        const auth = oauth.authenticateBearer(req);
-        res = auth.ok ? await mcp.handleRequest(req, auth.clientId) : auth.response;
+        const auth = oauth.authenticateBearer(req, peerIp);
+        res = auth.ok ? await mcp.handleRequest(req, auth.clientId, auth.ip) : auth.response;
       } else {
         res = new Response("Not Found", { status: 404 });
       }
@@ -56,7 +66,11 @@ export function createAppServer(config: AppConfig, initialApprovalCode?: string)
 if (import.meta.main) {
   const bunVersion = ensureBunVersion("1.4.0");
   const config = loadConfig();
-  const { server, oauth } = createAppServer(config);
+  const { server, oauth } = createAppServer(config, {
+    onApprovalCodeRotated(code) {
+      console.log(`Rotated one-time OAuth approval code: ${code}`);
+    },
+  });
   console.log(`JustNewMCP listening on http://${server.hostname}:${server.port} (Bun ${bunVersion})`);
   console.log(`One-time OAuth approval code: ${oauth.getApprovalCode()}`);
 }

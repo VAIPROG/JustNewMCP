@@ -11,20 +11,28 @@ describe("workspace path boundaries, denylist, and init", () => {
   let allowedRoot: string;
   let siblingRoot: string;
   let projectDir: string;
+  let symlinkMemoryProject: string;
 
   beforeAll(() => {
     baseDir = mkdtempSync(join(tmpdir(), "justnewmcp-test-"));
     allowedRoot = join(baseDir, "projects");
     siblingRoot = join(baseDir, "projects-evil");
     projectDir = join(allowedRoot, "demo-app");
+    symlinkMemoryProject = join(allowedRoot, "symlink-memory-app");
 
     mkdirSync(join(projectDir, ".justnewmcp"), { recursive: true });
+    mkdirSync(join(symlinkMemoryProject, ".justnewmcp"), { recursive: true });
     mkdirSync(siblingRoot, { recursive: true });
 
     writeFileSync(join(projectDir, "AGENTS.md"), "# Rules\nUse bun test.\n", "utf8");
     writeFileSync(join(projectDir, ".env"), "SECRET=123\n", "utf8");
     writeFileSync(join(projectDir, ".justnewmcp", "MEMORY.md"), "# Memory\nPort is 8787.\n", "utf8");
+    writeFileSync(join(siblingRoot, "outside-secret.txt"), "TOP_SECRET_OUTSIDE\n", "utf8");
     symlinkSync(siblingRoot, join(allowedRoot, "escape-link"));
+    symlinkSync(
+      join(siblingRoot, "outside-secret.txt"),
+      join(symlinkMemoryProject, ".justnewmcp", "MEMORY.md"),
+    );
   });
 
   afterAll(() => {
@@ -59,10 +67,22 @@ describe("workspace path boundaries, denylist, and init", () => {
 
   test("workspace_init sets active root and reads instructions and memory", async () => {
     const state: WorkspaceState = { activeRoot: null, matchedAllowedRoot: null };
-    const result = await initializeWorkspace(projectDir, [allowedRoot], state);
+    const result = await initializeWorkspace(projectDir, [allowedRoot], state, DEFAULT_DENIED_PATH_PATTERNS);
 
     expect(state.activeRoot).toBe(result.workspace);
     expect(result.instructionFiles).toContain("AGENTS.md");
     expect(result.memoryPreview).toContain("Port is 8787.");
+  });
+
+  test("workspace_init refuses to follow MEMORY.md symlink outside workspace root", async () => {
+    const state: WorkspaceState = { activeRoot: null, matchedAllowedRoot: null };
+    const result = await initializeWorkspace(
+      symlinkMemoryProject,
+      [allowedRoot],
+      state,
+      DEFAULT_DENIED_PATH_PATTERNS,
+    );
+
+    expect(result.memoryPreview).toBeNull();
   });
 });
