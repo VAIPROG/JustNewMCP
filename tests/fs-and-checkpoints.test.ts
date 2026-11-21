@@ -182,6 +182,51 @@ describe("filesystem tools and local checkpoints", () => {
     const globFromMeta = await globFilesTool(metaDir, DEFAULT_DENIED_PATH_PATTERNS, "**/*");
     expect(globFromMeta.files.some((f) => f.includes("snapshot.bin"))).toBe(false);
 
+    // Multiline quoted values and duplicate keys must parse and update cleanly
+    writeFileSync(
+      join(workspaceDir, ".env.multi"),
+      'X="first\nY=embedded\nlast"\nDUP=old\nDUP=effective\n',
+      "utf8",
+    );
+    const multiSummary = await readAvailableEnvsTool(workspaceDir, DEFAULT_DENIED_PATH_PATTERNS, ".env.multi");
+    expect(multiSummary.variables.map((v) => v.name)).toEqual(["X", "DUP"]);
+
+    // Setting Y must append a real Y without corrupting multiline X
+    await setEnvVarTool(workspaceDir, DEFAULT_DENIED_PATH_PATTERNS, {
+      path: ".env.multi",
+      key: "Y",
+      value: "real_y",
+    });
+    // Updating DUP must remove earlier duplicate and update effective value
+    await setEnvVarTool(workspaceDir, DEFAULT_DENIED_PATH_PATTERNS, {
+      path: ".env.multi",
+      key: "DUP",
+      value: "new_dup",
+    });
+    const multiCheck = Bun.spawnSync(
+      [
+        process.execPath,
+        `--env-file=${join(workspaceDir, ".env.multi")}`,
+        "-e",
+        "console.log(JSON.stringify({x:process.env.X,y:process.env.Y,dup:process.env.DUP}))",
+      ],
+      { stdout: "pipe", stderr: "pipe" },
+    );
+    expect(multiCheck.exitCode).toBe(0);
+    const multiLoaded = JSON.parse(multiCheck.stdout.toString().trim()) as { x: string; y: string; dup: string };
+    expect(multiLoaded.x).toBe("first\nY=embedded\nlast");
+    expect(multiLoaded.y).toBe("real_y");
+    expect(multiLoaded.dup).toBe("new_dup");
+
+    // Deleting DUP must leave it undefined
+    await setEnvVarTool(workspaceDir, DEFAULT_DENIED_PATH_PATTERNS, {
+      path: ".env.multi",
+      key: "DUP",
+      action: "delete",
+    });
+    const afterDel = await readAvailableEnvsTool(workspaceDir, DEFAULT_DENIED_PATH_PATTERNS, ".env.multi");
+    expect(afterDel.variables.map((v) => v.name)).toEqual(["X", "Y"]);
+
     await rewindCheckpoint(workspaceDir, dollarEdit.checkpointId, DEFAULT_DENIED_PATH_PATTERNS);
     await rewindCheckpoint(workspaceDir, winPathEdit.checkpointId, DEFAULT_DENIED_PATH_PATTERNS);
     await rewindCheckpoint(workspaceDir, added.checkpointId, DEFAULT_DENIED_PATH_PATTERNS);

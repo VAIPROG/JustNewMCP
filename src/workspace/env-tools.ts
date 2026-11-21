@@ -13,6 +13,14 @@ export interface EnvVarSummary {
   line: number;
 }
 
+interface ParsedEnvEntry {
+  key: string;
+  value: string;
+  line: number;
+  startOffset: number;
+  endOffset: number;
+}
+
 function stripEnvPatterns(deniedPatterns: string[]): string[] {
   return deniedPatterns.filter((p) => {
     const clean = p.trim().toLowerCase();
@@ -26,23 +34,138 @@ function assertEnvFileTarget(inputPath: string): void {
   }
 }
 
-function parseEnvLine(line: string): { key: string; value: string } | null {
-  const trimmed = line.trim();
-  if (!trimmed || trimmed.startsWith("#")) return null;
-  const withoutExport = trimmed.startsWith("export ") ? trimmed.slice(7).trim() : trimmed;
-  const eqIdx = withoutExport.indexOf("=");
-  if (eqIdx <= 0) return null;
-  const key = withoutExport.slice(0, eqIdx).trim();
-  if (!ENV_KEY_RE.test(key)) return null;
-  let value = withoutExport.slice(eqIdx + 1).trim();
-  if (
-    (value.startsWith('"') && value.endsWith('"') && value.length >= 2) ||
-    (value.startsWith("'") && value.endsWith("'") && value.length >= 2)
-  ) {
-    value = value.slice(1, -1);
+export function parseEnvEntries(text: string): ParsedEnvEntry[] {
+  const entries: ParsedEnvEntry[] = [];
+  const len = text.length;
+  let pos = 0;
+  let line = 1;
+
+  while (pos < len) {
+    const lineStart = pos;
+    const entryLine = line;
+
+    // Skip leading horizontal whitespace on the line
+    while (pos < len && (text[pos] === " " || text[pos] === "\t")) {
+      pos += 1;
+    }
+
+    // Blank line or comment line
+    if (pos >= len || text[pos] === "\n" || text[pos] === "\r" || text[pos] === "#") {
+      while (pos < len && text[pos] !== "\n") {
+        pos += 1;
+      }
+      if (pos < len && text[pos] === "\n") {
+        pos += 1;
+        line += 1;
+      }
+      continue;
+    }
+
+    // Optional `export ` prefix
+    if (text.slice(pos, pos + 7) === "export ") {
+      pos += 7;
+      while (pos < len && (text[pos] === " " || text[pos] === "\t")) {
+        pos += 1;
+      }
+    }
+
+    const keyStart = pos;
+    while (pos < len && text[pos] !== "=" && text[pos] !== "\n" && text[pos] !== "\r") {
+      pos += 1;
+    }
+
+    if (pos >= len || text[pos] !== "=") {
+      while (pos < len && text[pos] !== "\n") {
+        pos += 1;
+      }
+      if (pos < len && text[pos] === "\n") {
+        pos += 1;
+        line += 1;
+      }
+      continue;
+    }
+
+    const key = text.slice(keyStart, pos).trim();
+    pos += 1; // consume '='
+
+    while (pos < len && (text[pos] === " " || text[pos] === "\t")) {
+      pos += 1;
+    }
+
+    let value = "";
+    const quote = text[pos];
+    if (quote === '"' || quote === "'" || quote === "`") {
+      pos += 1;
+      const valChars: string[] = [];
+      while (pos < len) {
+        const ch = text[pos];
+        if (ch === "\\" && pos + 1 < len) {
+          const next = text[pos + 1];
+          if (quote === '"' && next === "n") {
+            valChars.push("\n");
+            pos += 2;
+            continue;
+          }
+          if (quote === '"' && next === "r") {
+            valChars.push("\r");
+            pos += 2;
+            continue;
+          }
+          if (next === "$" || next === quote) {
+            valChars.push(next);
+            pos += 2;
+            continue;
+          }
+        }
+        if (ch === quote) {
+          pos += 1;
+          break;
+        }
+        if (ch === "\n") {
+          line += 1;
+        }
+        valChars.push(ch ?? "");
+        pos += 1;
+      }
+      value = valChars.join("");
+      // Consume remainder of the closing line
+      while (pos < len && text[pos] !== "\n") {
+        pos += 1;
+      }
+      if (pos < len && text[pos] === "\n") {
+        pos += 1;
+        line += 1;
+      }
+    } else {
+      const valStart = pos;
+      while (pos < len && text[pos] !== "\n" && text[pos] !== "\r") {
+        pos += 1;
+      }
+      let rawVal = text.slice(valStart, pos).trim();
+      const commentIdx = rawVal.search(/\s+#/);
+      if (commentIdx !== -1) {
+        rawVal = rawVal.slice(0, commentIdx).trim();
+      }
+      value = rawVal.replaceAll("\\$", "$");
+      if (pos < len && text[pos] === "\r") pos += 1;
+      if (pos < len && text[pos] === "\n") {
+        pos += 1;
+        line += 1;
+      }
+    }
+
+    if (ENV_KEY_RE.test(key)) {
+      entries.push({
+        key,
+        value,
+        line: entryLine,
+        startOffset: lineStart,
+        endOffset: pos,
+      });
+    }
   }
-  value = value.replaceAll("\\$", "$");
-  return { key, value };
+
+  return entries;
 }
 
 function formatEnvValue(value: string): string {
@@ -86,20 +209,20 @@ export async function readAvailableEnvsTool(
   }
 
   const text = await Bun.file(resolvedPath).text();
-  const lines = text === "" ? [] : text.replace(/\r?\n$/, "").split(/\r?\n/);
-  const variables: EnvVarSummary[] = [];
+  const entries = parseEnvEntries(text);
 
-  for (let i = 0; i < lines.length; i += 1) {
-    const parsed = parseEnvLine(lines[i] ?? "");
-    if (!parsed) continue;
-    variables.push({
-      name: parsed.key,
-      valueLength: parsed.value.length,
-      isEmpty: parsed.value.length === 0,
-      line: i + 1,
+  // Last assignment wins (matching Bun's dotenv loader)
+  const effectiveByKey = new Map<string, EnvVarSummary>();
+  for (const entry of entries) {
+    effectiveByKey.set(entry.key, {
+      name: entry.key,
+      valueLength: entry.value.length,
+      isEmpty: entry.value.length === 0,
+      line: entry.line,
     });
   }
 
+  const variables = [...effectiveByKey.values()];
   return {
     path: relative(workspaceRoot, resolvedPath).replaceAll("\\", "/"),
     totalKeys: variables.length,
@@ -134,40 +257,45 @@ export async function setEnvVarTool(
   mkdirSync(dirname(targetPath), { recursive: true });
 
   const existing = existsSync(targetPath) ? await Bun.file(targetPath).text() : "";
-  const lines = existing === "" ? [] : existing.replace(/\r?\n$/, "").split(/\r?\n/);
+  const entries = parseEnvEntries(existing);
+  const matches = entries.filter((e) => e.key === opts.key);
   const actionMode = opts.action ?? "set";
 
-  let foundIndex = -1;
-  for (let i = 0; i < lines.length; i += 1) {
-    const parsed = parseEnvLine(lines[i] ?? "");
-    if (parsed && parsed.key === opts.key) {
-      foundIndex = i;
-      break;
-    }
-  }
-
+  let updatedText = existing;
   let resultAction: "created" | "updated" | "deleted";
+
   if (actionMode === "delete") {
-    if (foundIndex === -1) {
+    if (matches.length === 0) {
       throw new Error(`Environment variable "${opts.key}" not found in "${inputPath}".`);
     }
-    lines.splice(foundIndex, 1);
+    for (let i = matches.length - 1; i >= 0; i -= 1) {
+      const m = matches[i];
+      if (!m) continue;
+      updatedText = updatedText.slice(0, m.startOffset) + updatedText.slice(m.endOffset);
+    }
     resultAction = "deleted";
   } else {
     const value = opts.value ?? "";
-    const formatted = `${opts.key}=${formatEnvValue(value)}`;
-    if (foundIndex !== -1) {
-      lines[foundIndex] = formatted;
+    const formattedLine = `${opts.key}=${formatEnvValue(value)}\n`;
+
+    if (matches.length > 0) {
+      const lastIndex = matches.length - 1;
+      for (let i = lastIndex; i >= 0; i -= 1) {
+        const m = matches[i];
+        if (!m) continue;
+        const replacement = i === lastIndex ? formattedLine : "";
+        updatedText = updatedText.slice(0, m.startOffset) + replacement + updatedText.slice(m.endOffset);
+      }
       resultAction = "updated";
     } else {
-      lines.push(formatted);
+      const needsNewline = updatedText.length > 0 && !updatedText.endsWith("\n");
+      updatedText = `${updatedText}${needsNewline ? "\n" : ""}${formattedLine}`;
       resultAction = "created";
     }
   }
 
   const cp = await createCheckpoint(workspaceRoot, targetPath, `set_env_var:${opts.key}`);
-  const finalContent = lines.length > 0 ? `${lines.join("\n")}\n` : "";
-  await Bun.write(targetPath, finalContent);
+  await Bun.write(targetPath, updatedText);
 
   return {
     path: relative(workspaceRoot, targetPath).replaceAll("\\", "/"),
