@@ -142,19 +142,20 @@ async function readStreamBounded(
       if (done) break;
       if (!value) continue;
 
-      if (total + value.byteLength > maxBytes) {
-        const remaining = Math.max(0, maxBytes - total);
-        if (remaining > 0) {
+      if (total < maxBytes) {
+        if (total + value.byteLength > maxBytes) {
+          const remaining = maxBytes - total;
           chunks.push(value.subarray(0, remaining));
           total += remaining;
+          hitHardCap = true;
+        } else {
+          chunks.push(value);
+          total += value.byteLength;
         }
+      } else {
+        // Keep draining and discarding excess bytes so the child process does not hit EPIPE
         hitHardCap = true;
-        await reader.cancel();
-        break;
       }
-
-      chunks.push(value);
-      total += value.byteLength;
     }
   } catch {
     // Stream may close abruptly after forced kill or abort
