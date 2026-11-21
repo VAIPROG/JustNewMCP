@@ -13,7 +13,7 @@ import {
 } from "../workspace/fs-tools.ts";
 import { initializeWorkspace, type WorkspaceState } from "../workspace/init.ts";
 import { assertWorkspaceAnchored } from "../workspace/paths.ts";
-import { PlanMode, TASK_STATUSES, TaskManager } from "../workspace/tasks.ts";
+import { PlanMode, TASK_FIELD_LIMITS, TASK_STATUSES, TaskManager } from "../workspace/tasks.ts";
 
 interface JsonRpcRequest {
   jsonrpc: "2.0";
@@ -92,25 +92,29 @@ const CheckpointRewindArgs = z.object({
 
 const TaskIdArgs = z.object({ id: z.string().min(1) });
 const TaskCreateArgs = z.object({
-  title: z.string().trim().min(1),
+  title: z.string().trim().min(1).max(TASK_FIELD_LIMITS.title),
   status: z.enum(TASK_STATUSES).optional(),
-  dependencies: z.array(z.string().min(1)).optional(),
-  notes: z.string().optional(),
+  dependencies: z.array(z.string().min(1)).max(TASK_FIELD_LIMITS.dependencies).optional(),
+  notes: z.string().max(TASK_FIELD_LIMITS.notes).optional(),
 });
 const TaskUpdateArgs = TaskCreateArgs.partial().merge(TaskIdArgs);
 const PlanArgs = z.object({ summary: z.string().optional() });
 
 const TASK_PROPERTIES = {
-  title: { type: "string", minLength: 1 },
+  title: { type: "string", minLength: 1, maxLength: TASK_FIELD_LIMITS.title },
   status: { type: "string", enum: TASK_STATUSES },
-  dependencies: { type: "array", items: { type: "string" }, description: "IDs of prerequisite tasks" },
-  notes: { type: "string" },
+  dependencies: {
+    type: "array",
+    maxItems: TASK_FIELD_LIMITS.dependencies,
+    items: { type: "string" },
+    description: "IDs of prerequisite tasks",
+  },
+  notes: { type: "string", maxLength: TASK_FIELD_LIMITS.notes },
 };
 
 const PLAN_PROPERTIES = { summary: { type: "string" } };
 
 const PLAN_BLOCKED_TOOLS = new Set([
-  "workspace_init",
   "edit_file",
   "multi_edit",
   "write_file",
@@ -471,14 +475,16 @@ export class McpRouter {
       if (this.activeWorkspaceMutations > 0) {
         throw new Error("Cannot enter plan mode while a workspace mutation is in progress. Try again when it finishes.");
       }
+      const wasActive = this.plan.active;
       const result = this.plan.enter(PlanArgs.parse(args).summary);
-      this.audit.record("mcp.plan.entered", ip, { clientId, detail: name });
+      if (!wasActive) this.audit.record("mcp.plan.entered", ip, { clientId, detail: name });
       return result;
     }
 
     if (name === "plan_exit") {
+      const wasActive = this.plan.active;
       const result = this.plan.exit(PlanArgs.parse(args).summary);
-      this.audit.record("mcp.plan.exited", ip, { clientId, detail: name });
+      if (wasActive) this.audit.record("mcp.plan.exited", ip, { clientId, detail: name });
       return result;
     }
 

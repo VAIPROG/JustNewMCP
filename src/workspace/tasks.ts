@@ -1,6 +1,9 @@
 export const TASK_STATUSES = ["pending", "in_progress", "completed", "blocked"] as const;
 export type TaskStatus = (typeof TASK_STATUSES)[number];
 
+export const TASK_FIELD_LIMITS = { title: 300, notes: 10_000, dependencies: 50 } as const;
+const MAX_TASKS = 500;
+
 export interface Task {
   id: string;
   title: string;
@@ -17,6 +20,9 @@ export class TaskManager {
   private readonly tasks = new Map<string, Task>();
 
   create(input: TaskInput & Pick<Task, "title">): Task {
+    if (this.tasks.size >= MAX_TASKS) {
+      throw new Error(`Task limit reached (${MAX_TASKS} tasks).`);
+    }
     const id = crypto.randomUUID();
     const now = new Date().toISOString();
     const task: Task = {

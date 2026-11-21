@@ -56,6 +56,18 @@ describe("TaskManager", () => {
     expect(tasks.get(third.id).dependencies).toEqual([second.id]);
     expect(tasks.update(third.id, { dependencies: [] }).dependencies).toEqual([]);
   });
+
+  test("caps task creation at 500 while allowing updates", () => {
+    const tasks = new TaskManager();
+    const first = tasks.create({ title: "First" });
+    for (let i = 1; i < 500; i++) {
+      tasks.create({ title: `Task ${i + 1}` });
+    }
+
+    expect(() => tasks.create({ title: "One too many" })).toThrow("Task limit reached (500 tasks)");
+    expect(tasks.list()).toHaveLength(500);
+    expect(tasks.update(first.id, { status: "completed" }).status).toBe("completed");
+  });
 });
 
 test("plan mode returns the summary on exit and clears it for the next plan", () => {
@@ -160,7 +172,10 @@ test("authenticated /mcp calls manage tasks and enforce read-only plan mode", as
       "task_create", "task_update", "task_list", "task_get", "plan_enter", "plan_exit",
     ]));
 
-    await result("workspace_init", { path: root });
+    expect(await result("plan_enter")).toEqual({ active: true });
+    const workspace = await result<{ workspace: string }>("workspace_init", { path: root });
+    expect(await result("workspace_info")).toMatchObject({ activeRoot: workspace.workspace });
+    expect(await result("plan_exit")).toEqual({ active: false });
     const file = "plan.txt";
     const started = Promise.withResolvers<void>();
     const resume = Promise.withResolvers<void>();
@@ -189,6 +204,7 @@ test("authenticated /mcp calls manage tasks and enforce read-only plan mode", as
     const checkpoints = await result("checkpoint_list");
 
     expect(await result("plan_enter", { summary: "Inspect files" })).toEqual({ active: true, summary: "Inspect files" });
+    expect(await result("plan_enter")).toEqual({ active: true, summary: "Inspect files" });
 
     const mutations = [
       ["edit_file", { path: file, old_string: "before", new_string: "after" }],
@@ -196,7 +212,6 @@ test("authenticated /mcp calls manage tasks and enforce read-only plan mode", as
       ["write_file", { path: file, content: "after" }],
       ["set_env_var", { key: "FLAG", value: "after" }],
       ["checkpoint_rewind", { checkpoint_id: checkpointId }],
-      ["workspace_init", { path: root }],
     ] as const;
 
     expect(JSON.stringify(await result("read_file", { path: file }))).toContain("before");
@@ -215,19 +230,37 @@ test("authenticated /mcp calls manage tasks and enforce read-only plan mode", as
     expect(readFileSync(join(root, file), "utf8")).toBe("before");
     expect(readFileSync(join(root, ".env"), "utf8")).toBe("FLAG=before\n");
 
-    const first = await result<Task>("task_create", { title: "Inspect" });
+    const first = await result<Task>("task_create", { title: "x".repeat(300), notes: "x".repeat(10_000) });
     const second = await result<Task>("task_create", { title: "Apply changes", dependencies: [first.id] });
     expect(await result("task_list")).toEqual({ tasks: [first, second] });
     expect(await result("task_get", { id: second.id })).toEqual(second);
     expect(await result("task_update", { id: first.id, status: "completed", notes: "Done" }))
       .toMatchObject({ id: first.id, status: "completed", notes: "Done" });
 
+    const updatedSecond = await result<Task>("task_update", { id: second.id, dependencies: Array(50).fill(first.id) });
+    expect(updatedSecond.dependencies).toEqual([first.id]);
+    const invalidFields = {
+      title: "x".repeat(301),
+      notes: "x".repeat(10_001),
+      dependencies: Array(51).fill(first.id),
+    };
+    for (const [field, value] of Object.entries(invalidFields)) {
+      const create = await call("task_create", { title: "Too large", [field]: value });
+      const update = await call("task_update", { id: second.id, [field]: value });
+      expect(create.result?.isError).toBe(true);
+      expect(update.result?.isError).toBe(true);
+    }
+    expect(await result("task_list")).toMatchObject({ tasks: [{ id: first.id }, updatedSecond] });
+
     expect(await result("plan_exit")).toEqual({ active: false, summary: "Inspect files" });
+    expect(await result("plan_exit")).toEqual({ active: false });
     await result("write_file", { path: file, content: "after" });
     expect(readFileSync(join(root, file), "utf8")).toBe("after");
 
     const planEvents = running.audit.list().filter(({ event }) => event.startsWith("mcp.plan."));
     expect(planEvents).toMatchObject([
+      { event: "mcp.plan.entered", clientId, detail: "plan_enter" },
+      { event: "mcp.plan.exited", clientId, detail: "plan_exit" },
       { event: "mcp.plan.entered", clientId, detail: "plan_enter" },
       { event: "mcp.plan.exited", clientId, detail: "plan_exit" },
     ]);
