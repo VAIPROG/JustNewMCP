@@ -87,12 +87,15 @@ describe("run_allowed_cmd allowlisted command runner", () => {
       },
     ];
 
+    const started = Date.now();
     const res = await runAllowedCmdTool(workspaceDir, rules, {
       command: bunBin,
-      args: ["-e", "await Bun.sleep(5000)"],
+      args: ["-e", "process.on('SIGTERM', () => {}); await Bun.sleep(5000);"],
       timeoutMs: 150,
     });
+    const elapsedMs = Date.now() - started;
     expect(res.timedOut).toBe(true);
+    expect(elapsedMs).toBeLessThan(2000);
   });
 
   test("spills output exceeding maxOutputChars to .justnewmcp/logs with 0600 mode and 2K preview", async () => {

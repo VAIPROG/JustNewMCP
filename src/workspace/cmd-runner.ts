@@ -119,6 +119,7 @@ function buildSanitizedEnv(): Record<string, string> {
 async function readStreamBounded(
   stream: ReadableStream<Uint8Array> | null,
   maxBytes: number,
+  signal: AbortSignal,
 ): Promise<{ text: string; hitHardCap: boolean }> {
   if (!stream) return { text: "", hitHardCap: false };
   const reader = stream.getReader();
@@ -126,8 +127,17 @@ async function readStreamBounded(
   let total = 0;
   let hitHardCap = false;
 
+  const onAbort = () => {
+    reader.cancel().catch(() => {});
+  };
+  if (signal.aborted) {
+    onAbort();
+  } else {
+    signal.addEventListener("abort", onAbort, { once: true });
+  }
+
   try {
-    while (true) {
+    while (!signal.aborted) {
       const { done, value } = await reader.read();
       if (done) break;
       if (!value) continue;
@@ -146,7 +156,10 @@ async function readStreamBounded(
       chunks.push(value);
       total += value.byteLength;
     }
+  } catch {
+    // Stream may close abruptly after forced kill or abort
   } finally {
+    signal.removeEventListener("abort", onAbort);
     reader.releaseLock();
   }
 
@@ -183,20 +196,43 @@ export async function runAllowedCmdTool(
   });
 
   let timedOut = false;
+  const abortController = new AbortController();
+  let killTimer: ReturnType<typeof setTimeout> | undefined;
+
   const timer = setTimeout(() => {
     timedOut = true;
     try {
-      proc.kill();
+      proc.kill("SIGTERM");
     } catch {
       // Process may have already exited
     }
+    killTimer = setTimeout(() => {
+      try {
+        proc.kill("SIGKILL");
+      } catch {
+        // Process may have already exited
+      }
+      abortController.abort();
+    }, 150);
   }, timeoutMs);
 
-  const [stdoutRes, stderrRes, exitCode] = await Promise.all([
-    readStreamBounded(proc.stdout, MAX_CAPTURE_BYTES),
-    readStreamBounded(proc.stderr, MAX_CAPTURE_BYTES),
+  const exitPromise = Promise.race([
     proc.exited,
-  ]).finally(() => clearTimeout(timer));
+    new Promise<null>((resolveExit) => {
+      abortController.signal.addEventListener("abort", () => {
+        setTimeout(() => resolveExit(null), 150);
+      }, { once: true });
+    }),
+  ]);
+
+  const [stdoutRes, stderrRes, exitCode] = await Promise.all([
+    readStreamBounded(proc.stdout, MAX_CAPTURE_BYTES, abortController.signal),
+    readStreamBounded(proc.stderr, MAX_CAPTURE_BYTES, abortController.signal),
+    exitPromise,
+  ]).finally(() => {
+    clearTimeout(timer);
+    if (killTimer) clearTimeout(killTimer);
+  });
 
   const totalChars = stdoutRes.text.length + stderrRes.text.length;
   if (totalChars <= rule.maxOutputChars && !stdoutRes.hitHardCap && !stderrRes.hitHardCap) {
