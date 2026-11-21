@@ -3,6 +3,7 @@ import type { AppConfig } from "../config.ts";
 import { AuditLogger } from "../security/audit.ts";
 import { readBodyWithinLimit } from "../security/headers.ts";
 import { listCheckpoints, rewindCheckpoint } from "../workspace/checkpoints.ts";
+import { readAvailableEnvsTool, setEnvVarTool } from "../workspace/env-tools.ts";
 import {
   applyEditsTool,
   globFilesTool,
@@ -28,6 +29,19 @@ const ReadFileArgs = z.object({
   path: z.string().min(1),
   offset: z.number().int().min(1).optional(),
   limit: z.number().int().min(1).max(2000).optional(),
+  human_approved: z.boolean().optional(),
+  human_approval_note: z.string().max(300).optional(),
+});
+
+const ReadAvailableEnvsArgs = z.object({
+  path: z.string().min(1).optional(),
+});
+
+const SetEnvVarArgs = z.object({
+  path: z.string().min(1).optional(),
+  key: z.string().min(1).max(128),
+  value: z.string().optional(),
+  action: z.enum(["set", "delete"]).optional(),
 });
 
 const EditOpSchema = z.object({
@@ -95,15 +109,44 @@ const TOOL_DEFINITIONS = [
   },
   {
     name: "read_file",
-    description: "Read a UTF-8 file inside the active workspace with line numbers, optional offset, and line limit.",
+    description:
+      "Read a UTF-8 file inside the active workspace with line numbers, optional offset, and line limit. Safe .env templates (.env.example) are readable by default; real .env files require allowEnvReading or explicit human approval when askHumanAllowance is enabled.",
     inputSchema: {
       type: "object",
       properties: {
         path: { type: "string" },
         offset: { type: "integer", minimum: 1 },
         limit: { type: "integer", minimum: 1, maximum: 2000 },
+        human_approved: { type: "boolean" },
+        human_approval_note: { type: "string" },
       },
       required: ["path"],
+    },
+  },
+  {
+    name: "read_available_envs",
+    description:
+      "List variable names and value lengths from a .env file without exposing secret values.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        path: { type: "string", description: "Relative path to .env file (default: .env)" },
+      },
+    },
+  },
+  {
+    name: "set_env_var",
+    description:
+      "Add, update, or delete an environment variable in a .env file with an automatic pre-edit checkpoint.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        path: { type: "string", description: "Relative path to .env file (default: .env)" },
+        key: { type: "string" },
+        value: { type: "string" },
+        action: { type: "string", enum: ["set", "delete"] },
+      },
+      required: ["key"],
     },
   },
   {
@@ -287,7 +330,7 @@ export class McpRouter {
       const args = (payload.params?.arguments ?? {}) as Record<string, unknown>;
 
       try {
-        const result = await this.dispatchTool(name, args);
+        const result = await this.dispatchTool(name, args, ip, clientId);
         if (result === null) {
           return Response.json({
             jsonrpc: "2.0",
@@ -324,7 +367,12 @@ export class McpRouter {
     });
   }
 
-  private async dispatchTool(name: string, args: Record<string, unknown>): Promise<unknown | null> {
+  private async dispatchTool(
+    name: string,
+    args: Record<string, unknown>,
+    ip: string,
+    clientId: string,
+  ): Promise<unknown | null> {
     if (name === "workspace_init") {
       const parsed = WorkspaceInitArgs.parse(args);
       this.readTracker.clear();
@@ -346,7 +394,40 @@ export class McpRouter {
     if (name === "read_file") {
       const root = this.requireActiveWorkspace();
       const parsed = ReadFileArgs.parse(args);
-      return readFileTool(root, this.config.deniedPathPatterns, this.readTracker, parsed);
+      const res = await readFileTool(
+        root,
+        this.config.deniedPathPatterns,
+        this.readTracker,
+        {
+          path: parsed.path,
+          offset: parsed.offset,
+          limit: parsed.limit,
+          humanApproved: parsed.human_approved,
+        },
+        {
+          allowEnvReading: this.config.allowEnvReading,
+          askHumanAllowance: this.config.askHumanAllowance,
+        },
+      );
+      if (res.usedHumanApproval) {
+        this.audit.record("mcp.tool.human_approved", ip, {
+          clientId,
+          detail: `read_file:${parsed.path}${parsed.human_approval_note ? ` (${parsed.human_approval_note})` : ""}`,
+        });
+      }
+      return res;
+    }
+
+    if (name === "read_available_envs") {
+      const root = this.requireActiveWorkspace();
+      const parsed = ReadAvailableEnvsArgs.parse(args);
+      return readAvailableEnvsTool(root, this.config.deniedPathPatterns, parsed.path);
+    }
+
+    if (name === "set_env_var") {
+      const root = this.requireActiveWorkspace();
+      const parsed = SetEnvVarArgs.parse(args);
+      return setEnvVarTool(root, this.config.deniedPathPatterns, parsed);
     }
 
     if (name === "edit_file") {

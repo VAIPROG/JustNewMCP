@@ -2,6 +2,20 @@ import { existsSync, lstatSync, realpathSync } from "node:fs";
 import path from "node:path";
 
 const INTERNAL_PROTECTED_PATTERNS = [".justnewmcp/checkpoints", ".justnewmcp/checkpoints/*"];
+const SAFE_ENV_TEMPLATES = new Set([".env.example", ".env.sample", ".env.template", ".env.dist"]);
+
+export function isSafeEnvTemplatePath(filePath: string, platform: NodeJS.Platform = process.platform): boolean {
+  const pathLib = platform === "win32" ? path.win32 : path.posix;
+  const base = pathLib.basename(filePath).toLowerCase();
+  return SAFE_ENV_TEMPLATES.has(base);
+}
+
+export function isEnvSecretPath(filePath: string, platform: NodeJS.Platform = process.platform): boolean {
+  const pathLib = platform === "win32" ? path.win32 : path.posix;
+  const base = pathLib.basename(filePath).toLowerCase();
+  if (SAFE_ENV_TEMPLATES.has(base)) return false;
+  return base === ".env" || base.startsWith(".env.");
+}
 
 function normalizeForComparison(filePath: string, platform: NodeJS.Platform): string {
   return platform === "win32" ? filePath.toLowerCase() : filePath;
@@ -15,6 +29,10 @@ export function isPathDenied(
   const pathLib = platform === "win32" ? path.win32 : path.posix;
   const normalized = pathLib.normalize(filePath).replaceAll("\\", "/").toLowerCase();
   const base = pathLib.basename(filePath).toLowerCase();
+
+  if (SAFE_ENV_TEMPLATES.has(base)) {
+    return false;
+  }
 
   for (const pattern of deniedPatterns) {
     const cleanPattern = pattern.replaceAll("\\", "/").toLowerCase();

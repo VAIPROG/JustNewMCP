@@ -10,6 +10,7 @@ import {
 import { createAppServer, type RunningServer } from "../src/index.ts";
 import { computePkceS256, generateRandomToken } from "../src/security/crypto.ts";
 import { listCheckpoints, rewindCheckpoint } from "../src/workspace/checkpoints.ts";
+import { readAvailableEnvsTool, setEnvVarTool } from "../src/workspace/env-tools.ts";
 import {
   applyEditsTool,
   globFilesTool,
@@ -92,6 +93,68 @@ describe("filesystem tools and local checkpoints", () => {
     const rewindRes = await rewindCheckpoint(workspaceDir, editRes.checkpointId, DEFAULT_DENIED_PATH_PATTERNS);
     expect(rewindRes.action).toBe("restored");
     expect(readFileSync(join(workspaceDir, "src", "app.ts"), "utf8")).toContain("const port = 3000;");
+
+    // Literal replacement preserves $& and $$ tokens without JS String.replace expansion
+    const dollarEdit = await applyEditsTool(workspaceDir, DEFAULT_DENIED_PATH_PATTERNS, tracker, "src/app.ts", [
+      { old_string: "3000", new_string: "$&$$" },
+    ]);
+    expect(readFileSync(join(workspaceDir, "src", "app.ts"), "utf8")).toContain("const port = $&$$;");
+    await rewindCheckpoint(workspaceDir, dollarEdit.checkpointId, DEFAULT_DENIED_PATH_PATTERNS);
+  });
+
+  test("safe .env.example is readable, .env uses read_available_envs/set_env_var, and allowEnvReading/askHumanAllowance work", async () => {
+    const tracker = new Set<string>();
+    writeFileSync(join(workspaceDir, ".env.example"), "API_KEY=your-key-here\nPORT=8787\n", "utf8");
+
+    const exampleRes = await readFileTool(workspaceDir, DEFAULT_DENIED_PATH_PATTERNS, tracker, {
+      path: ".env.example",
+    });
+    expect(exampleRes.content).toContain("API_KEY=your-key-here");
+
+    const envs = await readAvailableEnvsTool(workspaceDir, DEFAULT_DENIED_PATH_PATTERNS, ".env");
+    expect(envs.totalKeys).toBe(1);
+    expect(envs.variables[0]).toEqual({ name: "API_KEY", valueLength: 6, isEmpty: false, line: 1 });
+    expect(JSON.stringify(envs)).not.toContain("secret");
+
+    const added = await setEnvVarTool(workspaceDir, DEFAULT_DENIED_PATH_PATTERNS, {
+      path: ".env",
+      key: "APP_PORT",
+      value: "9000",
+    });
+    expect(added.action).toBe("created");
+    expect(added.valueLength).toBe(4);
+    const afterAdd = await readAvailableEnvsTool(workspaceDir, DEFAULT_DENIED_PATH_PATTERNS, ".env");
+    expect(afterAdd.variables.map((v) => v.name)).toEqual(["API_KEY", "APP_PORT"]);
+    await rewindCheckpoint(workspaceDir, added.checkpointId, DEFAULT_DENIED_PATH_PATTERNS);
+
+    const allowedRead = await readFileTool(
+      workspaceDir,
+      DEFAULT_DENIED_PATH_PATTERNS,
+      tracker,
+      { path: ".env" },
+      { allowEnvReading: true },
+    );
+    expect(allowedRead.content).toContain("API_KEY=secret");
+
+    await expect(
+      readFileTool(
+        workspaceDir,
+        DEFAULT_DENIED_PATH_PATTERNS,
+        tracker,
+        { path: ".env" },
+        { askHumanAllowance: true },
+      ),
+    ).rejects.toThrow("explicit human approval");
+
+    const humanApprovedRead = await readFileTool(
+      workspaceDir,
+      DEFAULT_DENIED_PATH_PATTERNS,
+      tracker,
+      { path: ".env", humanApproved: true },
+      { askHumanAllowance: true },
+    );
+    expect(humanApprovedRead.usedHumanApproval).toBe(true);
+    expect(humanApprovedRead.content).toContain("API_KEY=secret");
   });
 
   test("multi_edit is atomic when a later edit fails", async () => {
@@ -191,6 +254,8 @@ describe("filesystem tools and local checkpoints", () => {
       trustedProxies: ["127.0.0.1", "::1"],
       allowedRoots: [baseDir],
       deniedPathPatterns: DEFAULT_DENIED_PATH_PATTERNS,
+      allowEnvReading: false,
+      askHumanAllowance: true,
       maxMcpBodyBytes: 1_048_576,
       oauth: {
         clientId,

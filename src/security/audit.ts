@@ -7,6 +7,7 @@ export type AuditEventType =
   | "oauth.rate_limited"
   | "mcp.auth.denied"
   | "mcp.tool.called"
+  | "mcp.tool.human_approved"
   | "mcp.tool.denied";
 
 export interface AuditEntry {

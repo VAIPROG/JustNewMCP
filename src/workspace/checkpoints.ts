@@ -1,7 +1,7 @@
 import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import { generateRandomToken } from "../security/crypto.ts";
-import { isPathInsideRoot, resolveWritablePathInsideRoot } from "./paths.ts";
+import { isEnvSecretPath, isPathInsideRoot, resolveWritablePathInsideRoot } from "./paths.ts";
 
 export interface CheckpointMeta {
   id: string;
@@ -154,7 +154,13 @@ export async function rewindCheckpoint(
   }
 
   const meta = JSON.parse(readFileSync(metaPath, "utf8")) as CheckpointMeta;
-  const targetPath = resolveWritablePathInsideRoot(meta.relativePath, workspaceRoot, deniedPatterns);
+  const effectiveDenied = isEnvSecretPath(meta.relativePath)
+    ? deniedPatterns.filter((p) => {
+        const clean = p.trim().toLowerCase();
+        return clean !== ".env" && clean !== ".env.*";
+      })
+    : deniedPatterns;
+  const targetPath = resolveWritablePathInsideRoot(meta.relativePath, workspaceRoot, effectiveDenied);
 
   if (!meta.existedBefore) {
     if (existsSync(targetPath)) {

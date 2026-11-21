@@ -19,6 +19,8 @@
     "id_ed25519",
     ".git/config"
   ],
+  "allowEnvReading": false,
+  "askHumanAllowance": false,
   "maxMcpBodyBytes": 1048576,
   "oauth": {
     "clientId": "justnewmcp-gemini",

@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, statSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import { createCheckpoint } from "./checkpoints.ts";
-import { isPathDenied, resolveInsideRoots, resolveWritablePathInsideRoot } from "./paths.ts";
+import { isEnvSecretPath, isPathDenied, resolveInsideRoots, resolveWritablePathInsideRoot } from "./paths.ts";
 
 const MAX_READ_FILE_BYTES = 2 * 1024 * 1024;
 const MAX_GREP_OUTPUT_CHARS = 30_000;
@@ -45,10 +45,23 @@ function resolveReadablePathInWorkspace(
   return resolvedPath;
 }
 
+export interface ReadFilePolicy {
+  allowEnvReading?: boolean;
+  askHumanAllowance?: boolean;
+}
+
 export interface ReadFileOptions {
   path: string;
   offset?: number;
   limit?: number;
+  humanApproved?: boolean;
+}
+
+function stripEnvPatterns(deniedPatterns: string[]): string[] {
+  return deniedPatterns.filter((p) => {
+    const clean = p.trim().toLowerCase();
+    return clean !== ".env" && clean !== ".env.*";
+  });
 }
 
 export async function readFileTool(
@@ -56,6 +69,7 @@ export async function readFileTool(
   deniedPatterns: string[],
   readTracker: Set<string>,
   opts: ReadFileOptions,
+  policy: ReadFilePolicy = {},
 ): Promise<{
   path: string;
   startLine: number;
@@ -63,8 +77,37 @@ export async function readFileTool(
   totalLines: number;
   hasMore: boolean;
   content: string;
+  usedHumanApproval?: boolean;
 }> {
-  const resolvedPath = resolveReadablePathInWorkspace(opts.path, workspaceRoot, deniedPatterns);
+  let effectiveDenied = deniedPatterns;
+  let usedHumanApproval = false;
+  const candidateAbs = resolve(workspaceRoot, opts.path);
+  let envSecret = isEnvSecretPath(candidateAbs);
+  if (!envSecret) {
+    try {
+      const { resolvedPath: probe } = resolveInsideRoots(candidateAbs, [workspaceRoot], process.platform, []);
+      envSecret = isEnvSecretPath(probe);
+    } catch {
+      // Let resolveReadablePathInWorkspace raise the standard boundary error
+    }
+  }
+
+  if (envSecret) {
+    if (policy.allowEnvReading) {
+      effectiveDenied = stripEnvPatterns(deniedPatterns);
+    } else if (policy.askHumanAllowance) {
+      if (opts.humanApproved) {
+        effectiveDenied = stripEnvPatterns(deniedPatterns);
+        usedHumanApproval = true;
+      } else {
+        throw new Error(
+          `Reading "${opts.path}" requires explicit human approval. Use read_available_envs to inspect variable names without values, or ask the user to reply with "Allow" / "Я разрешаю" and retry read_file with human_approved: true.`,
+        );
+      }
+    }
+  }
+
+  const resolvedPath = resolveReadablePathInWorkspace(opts.path, workspaceRoot, effectiveDenied);
   const stat = statSync(resolvedPath);
   if (stat.size > MAX_READ_FILE_BYTES) {
     throw new Error(`File "${opts.path}" is ${stat.size} bytes (max ${MAX_READ_FILE_BYTES} bytes).`);
@@ -92,6 +135,7 @@ export async function readFileTool(
     totalLines: allLines.length,
     hasMore: startLine - 1 + slice.length < allLines.length,
     content: numbered,
+    ...(usedHumanApproval ? { usedHumanApproval: true } : {}),
   };
 }
 
@@ -158,7 +202,8 @@ export async function applyEditsTool(
         `Edit #${i + 1}: old_string matched ${matches} times in "${inputPath}". Provide more context or set replace_all: true.`,
       );
     }
-    updated = op.replace_all ? parts.join(op.new_string) : updated.replace(op.old_string, op.new_string);
+    // Use parts.join for both single and replace_all modes so $&, $$, and $' in new_string stay literal
+    updated = parts.join(op.new_string);
     totalReplacements += op.replace_all ? matches : 1;
   }
 
@@ -183,7 +228,9 @@ export async function writeFileTool(
   checkpointId: string;
   bytesWritten: number;
 }> {
-  const targetPath = resolveWritablePathInsideRoot(inputPath, workspaceRoot, deniedPatterns);
+  // Allow writing to .env files (with pre-write checkpoint), while keeping non-env secrets blocked
+  const effectiveWriteDenied = isEnvSecretPath(inputPath) ? stripEnvPatterns(deniedPatterns) : deniedPatterns;
+  const targetPath = resolveWritablePathInsideRoot(inputPath, workspaceRoot, effectiveWriteDenied);
   mkdirSync(dirname(targetPath), { recursive: true });
 
   const cp = await createCheckpoint(workspaceRoot, targetPath, "write_file");
