@@ -5,27 +5,22 @@ function normalizeForComparison(filePath: string, platform: NodeJS.Platform): st
   return platform === "win32" ? filePath.toLowerCase() : filePath;
 }
 
-function globToRegex(pattern: string): RegExp {
-  const escaped = pattern.replace(/[.+^${}()|[\]\\]/g, "\\$&").replaceAll("*", "[^/]*");
-  return new RegExp(`^${escaped}$`, "i");
-}
-
 export function isPathDenied(
   filePath: string,
   deniedPatterns: string[],
   platform: NodeJS.Platform = process.platform,
 ): boolean {
   const pathLib = platform === "win32" ? path.win32 : path.posix;
-  const normalized = pathLib.normalize(filePath).replaceAll("\\", "/");
-  const base = pathLib.basename(filePath);
+  const normalized = pathLib.normalize(filePath).replaceAll("\\", "/").toLowerCase();
+  const base = pathLib.basename(filePath).toLowerCase();
 
   for (const pattern of deniedPatterns) {
-    const cleanPattern = pattern.replaceAll("\\", "/");
+    const cleanPattern = pattern.replaceAll("\\", "/").toLowerCase();
     if (cleanPattern.includes("/")) {
-      if (normalized.toLowerCase().endsWith(`/${cleanPattern.toLowerCase()}`) || normalized.toLowerCase() === cleanPattern.toLowerCase()) {
+      if (normalized.endsWith(`/${cleanPattern}`) || normalized === cleanPattern) {
         return true;
       }
-    } else if (globToRegex(cleanPattern).test(base)) {
+    } else if (new Bun.Glob(cleanPattern).match(base)) {
       return true;
     }
   }

@@ -19,5 +19,5 @@ jobs:
         with:
           bun-version: "latest"
       - run: bun install --frozen-lockfile
-      - run: bun ./node_modules/typescript/bin/tsc -p ./tsconfig.json --noEmit
-      - run: bun test
+      - run: bun check
+      - run: bun test --check

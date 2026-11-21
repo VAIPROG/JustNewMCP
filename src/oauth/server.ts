@@ -24,22 +24,9 @@ interface TokenRecord {
   expiresAt: number;
 }
 
-interface CsrfRecord {
-  expiresAt: number;
-}
-
 const MAX_OAUTH_BODY_BYTES = 16 * 1024;
 const CSRF_TTL_MS = 10 * 60 * 1000;
-const CSRF_COOKIE_NAME = "justnewmcp_csrf";
-
-function escapeHtml(value: string): string {
-  return value
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;")
-    .replaceAll("'", "&#39;");
-}
+const CSRF_SESSION_COOKIE = "justnewmcp_csrf_sid";
 
 function normalizeIp(ip: string): string {
   return ip.startsWith("::ffff:") ? ip.slice(7) : ip;
@@ -62,19 +49,6 @@ export function extractClientIp(
     if (first) return normalizeIp(first);
   }
   return normalizedPeer;
-}
-
-function parseCookie(header: string | null, name: string): string | null {
-  if (!header) return null;
-  for (const part of header.split(";")) {
-    const idx = part.indexOf("=");
-    if (idx === -1) continue;
-    const k = part.slice(0, idx).trim();
-    if (k === name) {
-      return part.slice(idx + 1).trim();
-    }
-  }
-  return null;
 }
 
 export function isAllowedRedirectUri(redirectUri: string, allowlist: string[]): boolean {
@@ -114,16 +88,17 @@ export class OAuthServer {
   private readonly rateLimiter: IpRateLimiter;
   private readonly audit: AuditLogger;
   private readonly onApprovalCodeRotated?: (code: string) => void;
+  private readonly csrfSecret: string;
   private readonly authCodes = new Map<string, AuthCodeRecord>();
   private readonly accessTokens = new Map<string, TokenRecord>();
   private readonly refreshTokens = new Map<string, TokenRecord>();
-  private readonly csrfTokens = new Map<string, CsrfRecord>();
   private approvalCode: string;
 
   constructor(private readonly config: AppConfig, options: OAuthServerOptions = {}) {
     this.rateLimiter = new IpRateLimiter(config.oauth.rateLimit);
     this.audit = options.audit ?? new AuditLogger();
     this.onApprovalCodeRotated = options.onApprovalCodeRotated;
+    this.csrfSecret = generateRandomToken(32);
     this.approvalCode = options.initialApprovalCode ?? generateApprovalCode();
   }
 
@@ -140,9 +115,6 @@ export class OAuthServer {
     }
     for (const [k, v] of this.refreshTokens) {
       if (v.expiresAt <= now) this.refreshTokens.delete(k);
-    }
-    for (const [k, v] of this.csrfTokens) {
-      if (v.expiresAt <= now) this.csrfTokens.delete(k);
     }
   }
 
@@ -203,8 +175,12 @@ export class OAuthServer {
       return new Response("PKCE S256 is required", { status: 400 });
     }
 
-    const csrfToken = generateRandomToken(24);
-    this.csrfTokens.set(sha256Hex(csrfToken), { expiresAt: Date.now() + CSRF_TTL_MS });
+    // Stateless HMAC-signed CSRF token via Bun.CSRF bound to an HttpOnly session cookie (zero server memory)
+    const csrfSessionId = generateRandomToken(24);
+    const csrfToken = Bun.CSRF.generate(this.csrfSecret, {
+      sessionId: csrfSessionId,
+      expiresIn: CSRF_TTL_MS,
+    });
 
     const html = `<!doctype html>
 <html lang="en">
@@ -220,14 +196,14 @@ export class OAuthServer {
 </head>
 <body>
   <h1>Approve MCP access</h1>
-  <p>Client <code>${escapeHtml(clientId)}</code> is requesting scope <code>${escapeHtml(scope)}</code>.</p>
+  <p>Client <code>${Bun.escapeHTML(clientId)}</code> is requesting scope <code>${Bun.escapeHTML(scope)}</code>.</p>
   <form method="POST" action="/oauth/authorize">
-    <input type="hidden" name="csrf_token" value="${escapeHtml(csrfToken)}" />
-    <input type="hidden" name="client_id" value="${escapeHtml(clientId)}" />
-    <input type="hidden" name="redirect_uri" value="${escapeHtml(redirectUri)}" />
-    <input type="hidden" name="code_challenge" value="${escapeHtml(codeChallenge)}" />
-    <input type="hidden" name="state" value="${escapeHtml(state)}" />
-    <input type="hidden" name="scope" value="${escapeHtml(scope)}" />
+    <input type="hidden" name="csrf_token" value="${Bun.escapeHTML(csrfToken)}" />
+    <input type="hidden" name="client_id" value="${Bun.escapeHTML(clientId)}" />
+    <input type="hidden" name="redirect_uri" value="${Bun.escapeHTML(redirectUri)}" />
+    <input type="hidden" name="code_challenge" value="${Bun.escapeHTML(codeChallenge)}" />
+    <input type="hidden" name="state" value="${Bun.escapeHTML(state)}" />
+    <input type="hidden" name="scope" value="${Bun.escapeHTML(scope)}" />
     <label for="approval_code">Terminal approval code</label>
     <input id="approval_code" name="approval_code" autocomplete="off" required />
     <button type="submit">Approve</button>
@@ -235,14 +211,21 @@ export class OAuthServer {
 </body>
 </html>`;
 
-    const secureFlag = this.config.publicUrl.startsWith("https://") ? "; Secure" : "";
+    const cookie = new Bun.Cookie(CSRF_SESSION_COOKIE, csrfSessionId, {
+      httpOnly: true,
+      sameSite: "strict",
+      path: "/oauth/authorize",
+      secure: this.config.publicUrl.startsWith("https://"),
+      maxAge: Math.floor(CSRF_TTL_MS / 1000),
+    });
+
     return new Response(html, {
       status: 200,
       headers: {
         "Content-Type": "text/html; charset=utf-8",
         "Content-Security-Policy":
           "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'",
-        "Set-Cookie": `${CSRF_COOKIE_NAME}=${csrfToken}; HttpOnly; SameSite=Strict; Path=/oauth/authorize${secureFlag}`,
+        "Set-Cookie": cookie.toString(),
       },
     });
   }
@@ -259,31 +242,36 @@ export class OAuthServer {
       });
     }
 
-    const form = await req.formData();
-    const csrfField = String(form.get("csrf_token") ?? "");
-    const csrfCookie = parseCookie(req.headers.get("cookie"), CSRF_COOKIE_NAME) ?? "";
-    const csrfHash = sha256Hex(csrfField);
-    const csrfRecord = this.csrfTokens.get(csrfHash);
-    this.csrfTokens.delete(csrfHash);
+    const contentType = (req.headers.get("content-type") ?? "").toLowerCase();
+    if (!contentType.includes("application/x-www-form-urlencoded")) {
+      return new Response("Unsupported Content-Type", { status: 415 });
+    }
 
-    if (
-      !csrfField ||
-      !csrfCookie ||
-      !csrfRecord ||
-      csrfRecord.expiresAt < Date.now() ||
-      !timingSafeEqualStrings(csrfField, csrfCookie)
-    ) {
+    const bodyRes = await readBodyWithinLimit(req, MAX_OAUTH_BODY_BYTES);
+    if (!bodyRes.ok) return bodyRes.response;
+
+    const params = new URLSearchParams(bodyRes.text);
+    const cookies = new Bun.CookieMap(req.headers.get("cookie") ?? "");
+    const csrfSessionId = cookies.get(CSRF_SESSION_COOKIE) ?? "";
+    const csrfField = params.get("csrf_token") ?? "";
+
+    const csrfValid =
+      Boolean(csrfSessionId) &&
+      Boolean(csrfField) &&
+      Bun.CSRF.verify(csrfField, { secret: this.csrfSecret, sessionId: csrfSessionId });
+
+    if (!csrfValid) {
       this.rateLimiter.recordFailure(ip);
       this.audit.record("oauth.authorize.denied", ip, { detail: "invalid_csrf" });
       return new Response("Invalid CSRF token", { status: 403 });
     }
 
-    const clientId = String(form.get("client_id") ?? "");
-    const redirectUri = String(form.get("redirect_uri") ?? "");
-    const codeChallenge = String(form.get("code_challenge") ?? "");
-    const state = String(form.get("state") ?? "");
-    const scope = String(form.get("scope") ?? "mcp:tools");
-    const submittedCode = String(form.get("approval_code") ?? "").trim().toUpperCase();
+    const clientId = params.get("client_id") ?? "";
+    const redirectUri = params.get("redirect_uri") ?? "";
+    const codeChallenge = params.get("code_challenge") ?? "";
+    const state = params.get("state") ?? "";
+    const scope = params.get("scope") ?? "mcp:tools";
+    const submittedCode = (params.get("approval_code") ?? "").trim().toUpperCase();
 
     if (!timingSafeEqualStrings(clientId, this.config.oauth.clientId)) {
       this.rateLimiter.recordFailure(ip);

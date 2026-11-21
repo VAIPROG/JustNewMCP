@@ -1,11 +1,11 @@
-import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
+import { randomBytes, timingSafeEqual } from "node:crypto";
 
 export function sha256Buffer(input: string): Buffer {
-  return createHash("sha256").update(input, "utf8").digest();
+  return Buffer.from(new Bun.CryptoHasher("sha256").update(input, "utf8").digest());
 }
 
 export function sha256Hex(input: string): string {
-  return createHash("sha256").update(input, "utf8").digest("hex");
+  return new Bun.CryptoHasher("sha256").update(input, "utf8").digest("hex");
 }
 
 export function timingSafeEqualStrings(a: string, b: string): boolean {
@@ -24,7 +24,7 @@ export function generateApprovalCode(): string {
 }
 
 export function computePkceS256(verifier: string): string {
-  return createHash("sha256").update(verifier, "ascii").digest("base64url");
+  return new Bun.CryptoHasher("sha256").update(verifier, "ascii").digest("base64url");
 }
 
 export function verifyPkceS256(verifier: string, expectedChallenge: string): boolean {

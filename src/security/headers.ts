@@ -39,13 +39,40 @@ export async function readBodyWithinLimit(
     }
   }
 
-  const buffer = await req.arrayBuffer();
-  if (buffer.byteLength > maxBytes) {
-    return {
-      ok: false,
-      response: Response.json({ error: "payload_too_large" }, { status: 413 }),
-    };
+  if (!req.body) {
+    return { ok: true, text: "" };
   }
 
-  return { ok: true, text: new TextDecoder("utf-8").decode(buffer) };
+  const reader = req.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let totalBytes = 0;
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (!value) continue;
+
+      totalBytes += value.byteLength;
+      if (totalBytes > maxBytes) {
+        await reader.cancel();
+        return {
+          ok: false,
+          response: Response.json({ error: "payload_too_large" }, { status: 413 }),
+        };
+      }
+      chunks.push(value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+
+  const merged = new Uint8Array(totalBytes);
+  let offset = 0;
+  for (const chunk of chunks) {
+    merged.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+
+  return { ok: true, text: new TextDecoder("utf-8").decode(merged) };
 }

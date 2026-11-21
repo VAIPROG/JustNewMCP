@@ -9,13 +9,14 @@ import {
 } from "../src/config.ts";
 import { createAppServer, type RunningServer } from "../src/index.ts";
 import { computePkceS256, generateRandomToken } from "../src/security/crypto.ts";
+import { readBodyWithinLimit } from "../src/security/headers.ts";
 
 describe("OAuth 2.1 security hardening and MCP /mcp integration", () => {
   let tempRoot: string;
   let outsideDir: string;
   let running: RunningServer;
   let baseUrl: string;
-  let rotatedCodes: string[] = [];
+  const rotatedCodes: string[] = [];
   const clientId = "gemini-test-client";
   const clientSecret = "super-secret-value-for-testing-123456";
   const approvalCode = "ABCD-1234-EFGH";
@@ -91,20 +92,52 @@ describe("OAuth 2.1 security hardening and MCP /mcp integration", () => {
     expect(res.status).toBe(400);
   });
 
-  test("blocks authorize POST without matching CSRF cookie and field", async () => {
-    const form = new FormData();
-    form.set("client_id", clientId);
-    form.set("redirect_uri", "https://gemini.google.com/oauth/callback");
-    form.set("code_challenge", computePkceS256(generateRandomToken(48)));
-    form.set("approval_code", approvalCode);
-    form.set("csrf_token", "forged-token");
-
-    const res = await fetch(`${baseUrl}/oauth/authorize`, {
+  test("blocks authorize POST without matching CSRF session cookie and rejects oversized or multipart bodies", async () => {
+    const badCsrf = await fetch(`${baseUrl}/oauth/authorize`, {
       method: "POST",
-      headers: { "X-Forwarded-For": "10.0.0.55" },
-      body: form,
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded",
+        "X-Forwarded-For": "10.0.0.55",
+      },
+      body: new URLSearchParams({
+        client_id: clientId,
+        redirect_uri: "https://gemini.google.com/oauth/callback",
+        code_challenge: computePkceS256(generateRandomToken(48)),
+        approval_code: approvalCode,
+        csrf_token: "forged-token",
+      }),
     });
-    expect(res.status).toBe(403);
+    expect(badCsrf.status).toBe(403);
+
+    const oversized = await fetch(`${baseUrl}/oauth/authorize`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded",
+        "X-Forwarded-For": "10.0.0.56",
+      },
+      body: `pad=${"a".repeat(20_000)}`,
+    });
+    expect(oversized.status).toBe(413);
+  });
+
+  test("readBodyWithinLimit cancels chunked streams without Content-Length once limit is exceeded", async () => {
+    let chunksPulled = 0;
+    const stream = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        chunksPulled += 1;
+        controller.enqueue(new Uint8Array(1024).fill(65));
+        if (chunksPulled >= 100) {
+          controller.close();
+        }
+      },
+    });
+    const req = new Request("http://127.0.0.1/mcp", { method: "POST", body: stream });
+    const result = await readBodyWithinLimit(req, 2048);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.response.status).toBe(413);
+    }
+    expect(chunksPulled).toBeLessThan(10);
   });
 
   test("ignores spoofed X-Forwarded-For when trustedProxies is empty", async () => {
@@ -202,7 +235,7 @@ describe("OAuth 2.1 security hardening and MCP /mcp integration", () => {
     expect(locked.headers.get("retry-after")).toBeTruthy();
   });
 
-  test("full OAuth 2.1 PKCE + CSRF flow, approval code rotation callback, MCP checks, revocation, and audit log", async () => {
+  test("full OAuth 2.1 PKCE + Bun.CSRF flow, approval rotation, MCP checks, revocation, and audit log", async () => {
     const ip = "10.0.0.42";
     const verifier = generateRandomToken(48);
     const challenge = computePkceS256(verifier);
@@ -215,26 +248,31 @@ describe("OAuth 2.1 security hardening and MCP /mcp integration", () => {
     expect(getAuth.headers.get("content-security-policy")).toContain("frame-ancestors 'none'");
 
     const setCookie = getAuth.headers.get("set-cookie") ?? "";
-    const cookieMatch = setCookie.match(/justnewmcp_csrf=([^;]+)/);
-    const csrfCookie = cookieMatch?.[1] ?? "";
-    expect(csrfCookie.length).toBeGreaterThan(16);
+    const cookieMatch = setCookie.match(/justnewmcp_csrf_sid=([^;]+)/);
+    const csrfSid = cookieMatch?.[1] ?? "";
+    expect(csrfSid.length).toBeGreaterThan(16);
 
-    const form = new FormData();
-    form.set("csrf_token", csrfCookie);
-    form.set("client_id", clientId);
-    form.set("redirect_uri", redirectUri);
-    form.set("code_challenge", challenge);
-    form.set("state", "xyz");
-    form.set("scope", "mcp:tools");
-    form.set("approval_code", approvalCode);
+    const html = await getAuth.text();
+    const tokenMatch = html.match(/name="csrf_token"\s+value="([^"]+)"/);
+    const csrfToken = tokenMatch?.[1] ?? "";
+    expect(csrfToken.length).toBeGreaterThan(16);
 
     const postAuth = await fetch(`${baseUrl}/oauth/authorize`, {
       method: "POST",
       headers: {
+        "Content-Type": "application/x-www-form-urlencoded",
         "X-Forwarded-For": ip,
-        Cookie: `justnewmcp_csrf=${csrfCookie}`,
+        Cookie: `justnewmcp_csrf_sid=${csrfSid}`,
       },
-      body: form,
+      body: new URLSearchParams({
+        csrf_token: csrfToken,
+        client_id: clientId,
+        redirect_uri: redirectUri,
+        code_challenge: challenge,
+        state: "xyz",
+        scope: "mcp:tools",
+        approval_code: approvalCode,
+      }),
       redirect: "manual",
     });
     expect(postAuth.status).toBe(302);

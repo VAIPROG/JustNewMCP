@@ -1,27 +1,5 @@
-export interface Semver {
-  major: number;
-  minor: number;
-  patch: number;
-}
-
-export function parseSemver(version: string): Semver {
-  const match = version.trim().match(/^(\d+)\.(\d+)\.(\d+)/);
-  if (!match) {
-    throw new Error(`Invalid Bun version string: "${version}"`);
-  }
-  return {
-    major: Number(match[1]),
-    minor: Number(match[2]),
-    patch: Number(match[3]),
-  };
-}
-
 export function isVersionAtLeast(current: string, minimum: string): boolean {
-  const a = parseSemver(current);
-  const b = parseSemver(minimum);
-  if (a.major !== b.major) return a.major > b.major;
-  if (a.minor !== b.minor) return a.minor > b.minor;
-  return a.patch >= b.patch;
+  return Bun.semver.satisfies(current.trim(), `>=${minimum.trim()}`);
 }
 
 export function ensureBunVersion(minimum = "1.4.0"): string {

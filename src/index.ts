@@ -30,6 +30,7 @@ export function createAppServer(config: AppConfig, options: CreateServerOptions 
   const server = Bun.serve({
     hostname: config.host,
     port: config.port,
+    maxRequestBodySize: Math.max(config.maxMcpBodyBytes, 64 * 1024),
     async fetch(req: Request, bunServer): Promise<Response> {
       const url = new URL(req.url);
       const peerIp = bunServer.requestIP(req)?.address ?? "127.0.0.1";
