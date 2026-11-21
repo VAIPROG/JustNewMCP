@@ -417,6 +417,24 @@ describe("filesystem tools and local checkpoints", () => {
       mode: "content",
     });
     expect(grepContent.matches[0]).toContain("src/app.ts:2:const host = '127.0.0.1';");
+
+    // Respect workspace .gitignore rules (including directory patterns and !negation)
+    mkdirSync(join(workspaceDir, "dist"), { recursive: true });
+    writeFileSync(join(workspaceDir, ".gitignore"), "private.json\ndist/\n!dist/keep.txt\n", "utf8");
+    writeFileSync(join(workspaceDir, "private.json"), '{"token":"gitignore-secret"}', "utf8");
+    writeFileSync(join(workspaceDir, "dist", "bundle.js"), "const gitignoreSecret = 1;\n", "utf8");
+    writeFileSync(join(workspaceDir, "dist", "keep.txt"), "keep-me-visible\n", "utf8");
+
+    const giGlob = await globFilesTool(workspaceDir, DEFAULT_DENIED_PATH_PATTERNS, "**/*");
+    expect(giGlob.files).not.toContain("private.json");
+    expect(giGlob.files).not.toContain("dist/bundle.js");
+    expect(giGlob.files).toContain("dist/keep.txt");
+
+    const giGrep = await grepFilesTool(workspaceDir, DEFAULT_DENIED_PATH_PATTERNS, {
+      pattern: "gitignore-secret|gitignoreSecret",
+      mode: "files_with_matches",
+    });
+    expect(giGrep.matches).toEqual([]);
   });
 
   test("end-to-end MCP /mcp HTTP call flow for write_file, read_file, edit_file, and checkpoint_rewind", async () => {

@@ -1,6 +1,7 @@
 import { chmodSync, existsSync, mkdirSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import { createCheckpoint } from "./checkpoints.ts";
+import { loadGitignoreMatcher } from "./gitignore.ts";
 import { INTERNAL_PROTECTED_PATTERNS, isEnvSecretPath, isPathDenied, resolveInsideRoots, resolveWritablePathInsideRoot } from "./paths.ts";
 
 const MAX_READ_FILE_BYTES = 2 * 1024 * 1024;
@@ -260,12 +261,13 @@ export async function globFilesTool(
   limit = 200,
 ): Promise<{ files: string[]; truncated: boolean }> {
   const capped = Math.max(1, Math.min(limit, 1000));
+  const isGitignored = loadGitignoreMatcher(workspaceRoot);
   const glob = new Bun.Glob(pattern);
   const candidates: Array<{ rel: string; mtimeMs: number }> = [];
 
   for await (const rawRel of glob.scan({ cwd: workspaceRoot, onlyFiles: true, dot: true, followSymlinks: false })) {
     const relPosix = rawRel.replaceAll("\\", "/");
-    if (isIgnoredRelativePath(relPosix, deniedPatterns)) continue;
+    if (isIgnoredRelativePath(relPosix, deniedPatterns) || isGitignored(relPosix)) continue;
 
     try {
       const fullPath = join(workspaceRoot, rawRel);
@@ -308,6 +310,7 @@ export async function grepFilesTool(
   const mode = opts.mode ?? "content";
   const maxMatches = Math.max(1, Math.min(opts.maxMatches ?? 100, 500));
   const contextLines = Math.max(0, Math.min(opts.contextLines ?? 0, 5));
+  const isGitignored = loadGitignoreMatcher(workspaceRoot);
   const re = new RegExp(opts.pattern, opts.caseInsensitive ? "i" : "");
   const glob = new Bun.Glob(opts.glob ?? "**/*");
 
@@ -317,7 +320,7 @@ export async function grepFilesTool(
 
   for await (const rawRel of glob.scan({ cwd: workspaceRoot, onlyFiles: true, dot: true, followSymlinks: false })) {
     const relPosix = rawRel.replaceAll("\\", "/");
-    if (isIgnoredRelativePath(relPosix, deniedPatterns)) continue;
+    if (isIgnoredRelativePath(relPosix, deniedPatterns) || isGitignored(relPosix)) continue;
 
     let resolvedPath: string;
     try {
