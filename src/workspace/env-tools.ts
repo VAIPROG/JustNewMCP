@@ -61,9 +61,12 @@ export function parseEnvEntries(text: string): ParsedEnvEntry[] {
       continue;
     }
 
-    // Optional `export ` prefix
-    if (text.slice(pos, pos + 7) === "export ") {
-      pos += 7;
+    // Optional `export` prefix followed by horizontal whitespace (space or tab)
+    if (
+      text.slice(pos, pos + 6) === "export" &&
+      (text[pos + 6] === " " || text[pos + 6] === "\t")
+    ) {
+      pos += 6;
       while (pos < len && (text[pos] === " " || text[pos] === "\t")) {
         pos += 1;
       }

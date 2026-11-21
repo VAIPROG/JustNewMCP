@@ -257,11 +257,11 @@ describe("filesystem tools and local checkpoints", () => {
     // Multiline quoted values and duplicate keys must parse and update cleanly
     writeFileSync(
       join(workspaceDir, ".env.multi"),
-      'X="first\nY=embedded\nlast"\nDUP=old\nDUP=effective\n',
+      'X="first\nY=embedded\nlast"\nexport\tTAB_KEY=from_tab\nDUP=old\nDUP=effective\n',
       "utf8",
     );
     const multiSummary = await readAvailableEnvsTool(workspaceDir, DEFAULT_DENIED_PATH_PATTERNS, ".env.multi");
-    expect(multiSummary.variables.map((v) => v.name)).toEqual(["X", "DUP"]);
+    expect(multiSummary.variables.map((v) => v.name)).toEqual(["X", "TAB_KEY", "DUP"]);
 
     // Setting Y must append a real Y without corrupting multiline X
     await setEnvVarTool(workspaceDir, DEFAULT_DENIED_PATH_PATTERNS, {
@@ -297,7 +297,7 @@ describe("filesystem tools and local checkpoints", () => {
       action: "delete",
     });
     const afterDel = await readAvailableEnvsTool(workspaceDir, DEFAULT_DENIED_PATH_PATTERNS, ".env.multi");
-    expect(afterDel.variables.map((v) => v.name)).toEqual(["X", "Y"]);
+    expect(afterDel.variables.map((v) => v.name)).toEqual(["X", "TAB_KEY", "Y"]);
 
     await rewindCheckpoint(workspaceDir, dollarEdit.checkpointId, DEFAULT_DENIED_PATH_PATTERNS);
     await rewindCheckpoint(workspaceDir, winPathEdit.checkpointId, DEFAULT_DENIED_PATH_PATTERNS);
