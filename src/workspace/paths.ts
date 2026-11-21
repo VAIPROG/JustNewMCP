@@ -1,7 +1,7 @@
 import { existsSync, lstatSync, realpathSync } from "node:fs";
 import path from "node:path";
 
-const INTERNAL_PROTECTED_PATTERNS = [".justnewmcp/checkpoints", ".justnewmcp/checkpoints/*"];
+export const INTERNAL_PROTECTED_PATTERNS = [".justnewmcp/checkpoints", ".justnewmcp/checkpoints/*"];
 const SAFE_ENV_TEMPLATES = new Set([".env.example", ".env.sample", ".env.template", ".env.dist"]);
 
 export function isSafeEnvTemplatePath(filePath: string, platform: NodeJS.Platform = process.platform): boolean {
@@ -30,12 +30,13 @@ export function isPathDenied(
   const normalized = pathLib.normalize(filePath).replaceAll("\\", "/").toLowerCase();
   const base = pathLib.basename(filePath).toLowerCase();
 
-  if (SAFE_ENV_TEMPLATES.has(base)) {
-    return false;
-  }
+  const isSafeTemplate = SAFE_ENV_TEMPLATES.has(base);
 
   for (const pattern of deniedPatterns) {
     const cleanPattern = pattern.replaceAll("\\", "/").toLowerCase();
+    if (isSafeTemplate && cleanPattern === ".env.*") {
+      continue;
+    }
     if (cleanPattern.includes("/")) {
       if (
         normalized.endsWith(`/${cleanPattern}`) ||

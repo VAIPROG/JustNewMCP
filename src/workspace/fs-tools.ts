@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, statSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import { createCheckpoint } from "./checkpoints.ts";
-import { isEnvSecretPath, isPathDenied, resolveInsideRoots, resolveWritablePathInsideRoot } from "./paths.ts";
+import { INTERNAL_PROTECTED_PATTERNS, isEnvSecretPath, isPathDenied, resolveInsideRoots, resolveWritablePathInsideRoot } from "./paths.ts";
 
 const MAX_READ_FILE_BYTES = 2 * 1024 * 1024;
 const MAX_GREP_OUTPUT_CHARS = 30_000;
@@ -38,7 +38,8 @@ function resolveReadablePathInWorkspace(
   deniedPatterns: string[],
 ): string {
   const candidate = resolve(workspaceRoot, inputPath);
-  const { resolvedPath } = resolveInsideRoots(candidate, [workspaceRoot], process.platform, deniedPatterns);
+  const combinedDenied = [...deniedPatterns, ...INTERNAL_PROTECTED_PATTERNS];
+  const { resolvedPath } = resolveInsideRoots(candidate, [workspaceRoot], process.platform, combinedDenied);
   if (!statSync(resolvedPath).isFile()) {
     throw new Error(`Path "${inputPath}" is not a regular file.`);
   }

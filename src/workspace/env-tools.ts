@@ -45,11 +45,20 @@ function parseEnvLine(line: string): { key: string; value: string } | null {
 }
 
 function formatEnvValue(value: string): string {
-  if (/[\s#"'`$\\]/.test(value)) {
-    const escaped = value.replaceAll("\\", "\\\\").replaceAll('"', '\\"').replaceAll("\n", "\\n");
+  if (/[\r\n]/.test(value)) {
+    const escaped = value
+      .replaceAll('"', '\\"')
+      .replaceAll("\r", "\\r")
+      .replaceAll("\n", "\\n");
     return `"${escaped}"`;
   }
-  return value;
+  if (!/[\s#"'`$]/.test(value)) {
+    return value;
+  }
+  if (!value.includes("'")) {
+    return `'${value}'`;
+  }
+  return `"${value.replaceAll('"', '\\"')}"`;
 }
 
 export async function readAvailableEnvsTool(

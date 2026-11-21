@@ -125,6 +125,33 @@ describe("filesystem tools and local checkpoints", () => {
     expect(added.valueLength).toBe(4);
     const afterAdd = await readAvailableEnvsTool(workspaceDir, DEFAULT_DENIED_PATH_PATTERNS, ".env");
     expect(afterAdd.variables.map((v) => v.name)).toEqual(["API_KEY", "APP_PORT"]);
+
+    // Direct read_file of the checkpoint snapshot payload must be blocked
+    await expect(
+      readFileTool(workspaceDir, DEFAULT_DENIED_PATH_PATTERNS, tracker, {
+        path: `.justnewmcp/checkpoints/${added.checkpointId}/snapshot.bin`,
+      }),
+    ).rejects.toThrow("blocked by security policy");
+
+    // Explicit deny rule for .env.example must still be honored
+    await expect(
+      readFileTool(workspaceDir, [...DEFAULT_DENIED_PATH_PATTERNS, ".env.example"], tracker, {
+        path: ".env.example",
+      }),
+    ).rejects.toThrow("blocked by security policy");
+
+    // Windows backslash path values must round-trip without doubling backslashes
+    const winPathEdit = await setEnvVarTool(workspaceDir, DEFAULT_DENIED_PATH_PATTERNS, {
+      path: ".env",
+      key: "WIN_PATH",
+      value: "C:\\Users\\alice\\My App",
+    });
+    const rawEnvAfter = readFileSync(join(workspaceDir, ".env"), "utf8");
+    expect(rawEnvAfter).toContain("WIN_PATH='C:\\Users\\alice\\My App'");
+    const parsedAfter = await readAvailableEnvsTool(workspaceDir, DEFAULT_DENIED_PATH_PATTERNS, ".env");
+    const winVar = parsedAfter.variables.find((v) => v.name === "WIN_PATH");
+    expect(winVar?.valueLength).toBe("C:\\Users\\alice\\My App".length);
+    await rewindCheckpoint(workspaceDir, winPathEdit.checkpointId, DEFAULT_DENIED_PATH_PATTERNS);
     await rewindCheckpoint(workspaceDir, added.checkpointId, DEFAULT_DENIED_PATH_PATTERNS);
 
     const allowedRead = await readFileTool(
