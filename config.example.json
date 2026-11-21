@@ -1,0 +1,41 @@
+{
+  "host": "127.0.0.1",
+  "port": 8787,
+  "publicUrl": "https://mcp.example.com",
+  "trustedProxies": [
+    "127.0.0.1",
+    "::1"
+  ],
+  "allowedRoots": [
+    "/home/user/projects",
+    "C:\\Users\\user\\projects"
+  ],
+  "deniedPathPatterns": [
+    ".env",
+    ".env.*",
+    "*.pem",
+    "*.key",
+    "id_rsa",
+    "id_ed25519",
+    ".git/config"
+  ],
+  "maxMcpBodyBytes": 1048576,
+  "oauth": {
+    "clientId": "justnewmcp-gemini",
+    "clientSecret": "replace-with-32-byte-random-secret",
+    "allowedRedirectUris": [
+      "https://gemini.google.com/",
+      "https://aistudio.google.com/",
+      "http://127.0.0.1",
+      "http://localhost"
+    ],
+    "accessTokenTtlSec": 3600,
+    "refreshTokenTtlSec": 604800,
+    "authCodeTtlSec": 300,
+    "rateLimit": {
+      "maxFailures": 5,
+      "windowMs": 60000,
+      "lockoutMs": 300000
+    }
+  }
+}
