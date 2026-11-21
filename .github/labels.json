@@ -1,0 +1,24 @@
+[
+  { "name": "priority: critical", "color": "b60205", "description": "Blocking bug or security issue" },
+  { "name": "priority: high", "color": "d93f0b", "description": "Important work for the current milestone" },
+  { "name": "priority: medium", "color": "fbca04", "description": "Standard planned work" },
+  { "name": "priority: low", "color": "0e8a16", "description": "Nice to have when time allows" },
+
+  { "name": "type: feat", "color": "1d76db", "description": "New tool, module, or capability" },
+  { "name": "type: bug", "color": "d73a4a", "description": "Something does not work as expected" },
+  { "name": "type: security", "color": "5319e7", "description": "Auth, sandbox, or path-boundary hardening" },
+  { "name": "type: docs", "color": "0075ca", "description": "Documentation and architecture updates" },
+  { "name": "type: chore", "color": "cfd3d7", "description": "Tooling, CI, dependencies, or repo upkeep" },
+
+  { "name": "area: oauth", "color": "6f42c1", "description": "OAuth 2.1 server, PKCE, and rate limiting" },
+  { "name": "area: mcp", "color": "0052cc", "description": "Streamable HTTP transport and MCP protocol" },
+  { "name": "area: workspace", "color": "0e8a16", "description": "Root boundaries, workspace_init, and worktrees" },
+  { "name": "area: fs", "color": "1d76db", "description": "File read, edit, write, glob, grep, checkpoints" },
+  { "name": "area: cmd", "color": "e99695", "description": "Allowlisted command runner and background jobs" },
+  { "name": "area: memory", "color": "f9d0c4", "description": "Project memory index and rules loading" },
+  { "name": "area: tasks", "color": "fef2c0", "description": "Server-side task tracker and plan mode" },
+
+  { "name": "status: blocked", "color": "b60205", "description": "Waiting on external dependency or decision" },
+  { "name": "status: needs-review", "color": "fbca04", "description": "Ready for maintainer review" },
+  { "name": "status: wip", "color": "d4c5f9", "description": "Active work in progress" }
+]

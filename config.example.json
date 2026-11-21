@@ -1,0 +1,21 @@
+{
+  "host": "127.0.0.1",
+  "port": 8787,
+  "publicUrl": "https://mcp.example.com",
+  "allowedRoots": [
+    "/home/user/projects",
+    "C:\\Users\\user\\projects"
+  ],
+  "oauth": {
+    "clientId": "justnewmcp-gemini",
+    "clientSecret": "replace-with-32-byte-random-secret",
+    "accessTokenTtlSec": 3600,
+    "refreshTokenTtlSec": 604800,
+    "authCodeTtlSec": 300,
+    "rateLimit": {
+      "maxFailures": 5,
+      "windowMs": 60000,
+      "lockoutMs": 300000
+    }
+  }
+}
