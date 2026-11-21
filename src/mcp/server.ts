@@ -13,6 +13,7 @@ import {
 } from "../workspace/fs-tools.ts";
 import { initializeWorkspace, type WorkspaceState } from "../workspace/init.ts";
 import { assertWorkspaceAnchored } from "../workspace/paths.ts";
+import { PlanMode, TASK_STATUSES, TaskManager } from "../workspace/tasks.ts";
 
 interface JsonRpcRequest {
   jsonrpc: "2.0";
@@ -88,6 +89,34 @@ const CheckpointListArgs = z.object({
 const CheckpointRewindArgs = z.object({
   checkpoint_id: z.string().min(8).max(64),
 });
+
+const TaskIdArgs = z.object({ id: z.string().min(1) });
+const TaskCreateArgs = z.object({
+  title: z.string().trim().min(1),
+  status: z.enum(TASK_STATUSES).optional(),
+  dependencies: z.array(z.string().min(1)).optional(),
+  notes: z.string().optional(),
+});
+const TaskUpdateArgs = TaskCreateArgs.partial().merge(TaskIdArgs);
+const PlanArgs = z.object({ summary: z.string().optional() });
+
+const TASK_PROPERTIES = {
+  title: { type: "string", minLength: 1 },
+  status: { type: "string", enum: TASK_STATUSES },
+  dependencies: { type: "array", items: { type: "string" }, description: "IDs of prerequisite tasks" },
+  notes: { type: "string" },
+};
+
+const PLAN_PROPERTIES = { summary: { type: "string" } };
+
+const PLAN_BLOCKED_TOOLS = new Set([
+  "workspace_init",
+  "edit_file",
+  "multi_edit",
+  "write_file",
+  "set_env_var",
+  "checkpoint_rewind",
+]);
 
 const TOOL_DEFINITIONS = [
   {
@@ -250,6 +279,40 @@ const TOOL_DEFINITIONS = [
       required: ["checkpoint_id"],
     },
   },
+  {
+    name: "task_create",
+    description: "Create a server-side task. Status defaults to pending.",
+    inputSchema: { type: "object", properties: TASK_PROPERTIES, required: ["title"] },
+  },
+  {
+    name: "task_update",
+    description: "Update the supplied fields of a task. A supplied dependency list replaces the existing list.",
+    inputSchema: {
+      type: "object",
+      properties: { id: { type: "string" }, ...TASK_PROPERTIES },
+      required: ["id"],
+    },
+  },
+  {
+    name: "task_list",
+    description: "List all tasks in creation order.",
+    inputSchema: { type: "object", properties: {} },
+  },
+  {
+    name: "task_get",
+    description: "Get a task by ID.",
+    inputSchema: { type: "object", properties: { id: { type: "string" } }, required: ["id"] },
+  },
+  {
+    name: "plan_enter",
+    description: "Enter read-only workspace mode, optionally recording a plan summary.",
+    inputSchema: { type: "object", properties: PLAN_PROPERTIES },
+  },
+  {
+    name: "plan_exit",
+    description: "Exit read-only workspace mode and return the plan summary, with an optional replacement.",
+    inputSchema: { type: "object", properties: PLAN_PROPERTIES },
+  },
 ];
 
 export class McpRouter {
@@ -258,6 +321,9 @@ export class McpRouter {
     matchedAllowedRoot: null,
   };
   private readonly readTracker = new Set<string>();
+  private readonly tasks = new TaskManager();
+  private readonly plan = new PlanMode();
+  private activeWorkspaceMutations = 0;
 
   constructor(
     private readonly config: AppConfig,
@@ -328,8 +394,17 @@ export class McpRouter {
     if (payload.method === "tools/call") {
       const name = String(payload.params?.name ?? "");
       const args = (payload.params?.arguments ?? {}) as Record<string, unknown>;
+      const changesWorkspace = PLAN_BLOCKED_TOOLS.has(name);
+      let mutationStarted = false;
 
       try {
+        if (changesWorkspace) {
+          if (this.plan.active) {
+            throw new Error(`Plan mode is active (read-only). Call plan_exit before using ${name}.`);
+          }
+          this.activeWorkspaceMutations++;
+          mutationStarted = true;
+        }
         const result = await this.dispatchTool(name, args, ip, clientId);
         if (result === null) {
           return Response.json({
@@ -357,6 +432,8 @@ export class McpRouter {
             content: [{ type: "text", text: message }],
           },
         });
+      } finally {
+        if (mutationStarted) this.activeWorkspaceMutations--;
       }
     }
 
@@ -373,6 +450,38 @@ export class McpRouter {
     ip: string,
     clientId: string,
   ): Promise<unknown | null> {
+    if (name === "task_create") {
+      return this.tasks.create(TaskCreateArgs.parse(args));
+    }
+
+    if (name === "task_update") {
+      const { id, ...changes } = TaskUpdateArgs.parse(args);
+      return this.tasks.update(id, changes);
+    }
+
+    if (name === "task_list") {
+      return { tasks: this.tasks.list() };
+    }
+
+    if (name === "task_get") {
+      return this.tasks.get(TaskIdArgs.parse(args).id);
+    }
+
+    if (name === "plan_enter") {
+      if (this.activeWorkspaceMutations > 0) {
+        throw new Error("Cannot enter plan mode while a workspace mutation is in progress. Try again when it finishes.");
+      }
+      const result = this.plan.enter(PlanArgs.parse(args).summary);
+      this.audit.record("mcp.plan.entered", ip, { clientId, detail: name });
+      return result;
+    }
+
+    if (name === "plan_exit") {
+      const result = this.plan.exit(PlanArgs.parse(args).summary);
+      this.audit.record("mcp.plan.exited", ip, { clientId, detail: name });
+      return result;
+    }
+
     if (name === "workspace_init") {
       const parsed = WorkspaceInitArgs.parse(args);
       this.readTracker.clear();
