@@ -76,7 +76,7 @@ export async function readFileTool(
     throw new Error(decoded.reason);
   }
 
-  const allLines = decoded.text.replace(/\r?\n$/, "").split(/\r?\n/);
+  const allLines = decoded.text === "" ? [] : decoded.text.replace(/\r?\n$/, "").split(/\r?\n/);
   const startLine = Math.max(1, opts.offset ?? 1);
   const limit = Math.max(1, Math.min(opts.limit ?? 200, 2000));
   const slice = allLines.slice(startLine - 1, startLine - 1 + limit);
@@ -84,7 +84,7 @@ export async function readFileTool(
 
   readTracker.add(resolvedPath);
 
-  const endLine = slice.length > 0 ? startLine + slice.length - 1 : startLine;
+  const endLine = slice.length > 0 ? startLine + slice.length - 1 : 0;
   return {
     path: relative(workspaceRoot, resolvedPath).replaceAll("\\", "/"),
     startLine,
@@ -116,7 +116,10 @@ export async function applyEditsTool(
     throw new Error("At least one edit operation is required.");
   }
 
-  const resolvedPath = resolveReadablePathInWorkspace(inputPath, workspaceRoot, deniedPatterns);
+  const resolvedPath = resolveWritablePathInsideRoot(inputPath, workspaceRoot, deniedPatterns);
+  if (!existsSync(resolvedPath) || !statSync(resolvedPath).isFile()) {
+    throw new Error(`Path "${inputPath}" is not a regular file.`);
+  }
   if (!readTracker.has(resolvedPath)) {
     throw new Error(`Read "${inputPath}" with read_file before editing it.`);
   }
@@ -141,6 +144,9 @@ export async function applyEditsTool(
     if (!op) continue;
     if (op.old_string.length === 0) {
       throw new Error(`Edit #${i + 1}: old_string must not be empty.`);
+    }
+    if (op.old_string === op.new_string) {
+      throw new Error(`Edit #${i + 1}: new_string must differ from old_string.`);
     }
     const parts = updated.split(op.old_string);
     const matches = parts.length - 1;
@@ -201,7 +207,7 @@ export async function globFilesTool(
   const glob = new Bun.Glob(pattern);
   const candidates: Array<{ rel: string; mtimeMs: number }> = [];
 
-  for await (const rawRel of glob.scan({ cwd: workspaceRoot, onlyFiles: true, dot: true })) {
+  for await (const rawRel of glob.scan({ cwd: workspaceRoot, onlyFiles: true, dot: true, followSymlinks: false })) {
     const relPosix = rawRel.replaceAll("\\", "/");
     if (isIgnoredRelativePath(relPosix, deniedPatterns)) continue;
 
@@ -252,7 +258,7 @@ export async function grepFilesTool(
   let charCount = 0;
   let truncated = false;
 
-  for await (const rawRel of glob.scan({ cwd: workspaceRoot, onlyFiles: true, dot: true })) {
+  for await (const rawRel of glob.scan({ cwd: workspaceRoot, onlyFiles: true, dot: true, followSymlinks: false })) {
     const relPosix = rawRel.replaceAll("\\", "/");
     if (isIgnoredRelativePath(relPosix, deniedPatterns)) continue;
 

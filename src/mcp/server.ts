@@ -11,6 +11,7 @@ import {
   writeFileTool,
 } from "../workspace/fs-tools.ts";
 import { initializeWorkspace, type WorkspaceState } from "../workspace/init.ts";
+import { assertWorkspaceAnchored } from "../workspace/paths.ts";
 
 interface JsonRpcRequest {
   jsonrpc: "2.0";
@@ -53,13 +54,13 @@ const WriteFileArgs = z.object({
 });
 
 const GlobFilesArgs = z.object({
-  pattern: z.string().min(1),
+  pattern: z.string().min(1).max(500),
   limit: z.number().int().min(1).max(1000).optional(),
 });
 
 const GrepFilesArgs = z.object({
-  pattern: z.string().min(1),
-  glob: z.string().min(1).optional(),
+  pattern: z.string().min(1).max(500),
+  glob: z.string().min(1).max(500).optional(),
   case_insensitive: z.boolean().optional(),
   context_lines: z.number().int().min(0).max(5).optional(),
   mode: z.enum(["files_with_matches", "content", "count"]).optional(),
@@ -224,7 +225,7 @@ export class McpRouter {
     if (!this.workspaceState.activeRoot) {
       throw new Error("No active workspace. Call workspace_init first.");
     }
-    return this.workspaceState.activeRoot;
+    return assertWorkspaceAnchored(this.workspaceState.activeRoot, this.config.allowedRoots);
   }
 
   async handleRequest(req: Request, clientId: string, ip: string): Promise<Response> {

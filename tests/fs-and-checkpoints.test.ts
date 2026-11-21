@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -270,6 +270,27 @@ describe("filesystem tools and local checkpoints", () => {
       const rewindRes = await callTool(4, "checkpoint_rewind", { checkpoint_id: editData.checkpointId });
       expect(rewindRes.isError).toBeUndefined();
       expect(readFileSync(join(workspaceDir, "src", "e2e.ts"), "utf8")).toBe("export const v = 1;\n");
+
+      // Empty file reports totalLines 0 cleanly
+      await callTool(5, "write_file", { path: "src/empty.ts", content: "" });
+      const emptyRead = await callTool(6, "read_file", { path: "src/empty.ts" });
+      const emptyData = JSON.parse(emptyRead.content[0]?.text ?? "{}") as { totalLines: number; endLine: number };
+      expect(emptyData.totalLines).toBe(0);
+      expect(emptyData.endLine).toBe(0);
+
+      // Replacing active workspace with a symlink to outsideDir after workspace_init must be rejected
+      const swapRepo = join(baseDir, "swap-repo");
+      const movedRepo = join(baseDir, "swap-repo-moved");
+      mkdirSync(swapRepo, { recursive: true });
+      writeFileSync(join(swapRepo, "ok.txt"), "ok\n", "utf8");
+      const swapInit = await callTool(7, "workspace_init", { path: swapRepo });
+      expect(swapInit.isError).toBeUndefined();
+
+      renameSync(swapRepo, movedRepo);
+      symlinkSync(outsideDir, swapRepo);
+      const swappedRead = await callTool(8, "read_file", { path: "secret.txt" });
+      expect(swappedRead.isError).toBe(true);
+      expect(swappedRead.content[0]?.text).toContain("replaced by a symlink");
     } finally {
       running.server.stop(true);
     }

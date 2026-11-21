@@ -146,7 +146,9 @@ export async function rewindCheckpoint(
   }
 
   const cpDir = join(getCheckpointsRoot(workspaceRoot), checkpointId);
+  assertNotSymlink(cpDir);
   const metaPath = join(cpDir, "meta.json");
+  assertNotSymlink(metaPath);
   if (!existsSync(metaPath)) {
     throw new Error(`Checkpoint "${checkpointId}" not found.`);
   }
@@ -162,6 +164,7 @@ export async function rewindCheckpoint(
   }
 
   const snapshotPath = join(cpDir, "snapshot.bin");
+  assertNotSymlink(snapshotPath);
   if (!existsSync(snapshotPath)) {
     throw new Error(`Snapshot payload missing for checkpoint "${checkpointId}".`);
   }

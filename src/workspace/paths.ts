@@ -78,6 +78,21 @@ export function resolveInsideRoots(
   throw new Error(`Path "${targetPath}" is outside allowed workspace roots.`);
 }
 
+export function assertWorkspaceAnchored(
+  expectedCanonicalRoot: string,
+  allowedRoots: string[],
+  platform: NodeJS.Platform = process.platform,
+): string {
+  const currentReal = realpathSync(path.resolve(expectedCanonicalRoot));
+  const expectedNorm = normalizeForComparison(path.resolve(expectedCanonicalRoot), platform);
+  const currentNorm = normalizeForComparison(currentReal, platform);
+  if (currentNorm !== expectedNorm) {
+    throw new Error("Active workspace directory changed or was replaced by a symlink after workspace_init.");
+  }
+  const { resolvedPath } = resolveInsideRoots(currentReal, allowedRoots, platform);
+  return resolvedPath;
+}
+
 export function resolveWritablePathInsideRoot(
   inputPath: string,
   workspaceRoot: string,
