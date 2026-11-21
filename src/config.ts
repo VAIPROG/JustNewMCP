@@ -44,6 +44,8 @@ export const ConfigSchema = z.object({
   allowedRoots: z.array(z.string().min(1)).min(1),
   memoryDir: z.string().min(1).optional(),
   deniedPathPatterns: z.array(z.string().min(1)).default(DEFAULT_DENIED_PATH_PATTERNS),
+  allowEnvReading: z.boolean().default(false),
+  askHumanAllowance: z.boolean().default(false),
   maxMcpBodyBytes: z.number().int().min(1024).default(1_048_576),
   oauth: OAuthConfigSchema,
 });
@@ -72,6 +74,14 @@ export function loadConfig(configPath?: string): AppConfig {
       ? process.env.JUSTNEWMCP_ALLOWED_ROOTS.split(",").map((s) => s.trim()).filter(Boolean)
       : raw.allowedRoots,
     memoryDir: process.env.JUSTNEWMCP_MEMORY_DIR ?? raw.memoryDir,
+    allowEnvReading:
+      process.env.JUSTNEWMCP_ALLOW_ENV_READING !== undefined
+        ? process.env.JUSTNEWMCP_ALLOW_ENV_READING === "true"
+        : raw.allowEnvReading,
+    askHumanAllowance:
+      process.env.JUSTNEWMCP_ASK_HUMAN_ALLOWANCE !== undefined
+        ? process.env.JUSTNEWMCP_ASK_HUMAN_ALLOWANCE === "true"
+        : raw.askHumanAllowance,
     oauth: {
       ...rawOAuth,
       clientId: process.env.JUSTNEWMCP_CLIENT_ID ?? rawOAuth.clientId,

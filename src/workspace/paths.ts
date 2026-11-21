@@ -1,5 +1,21 @@
-import { realpathSync } from "node:fs";
+import { existsSync, lstatSync, realpathSync } from "node:fs";
 import path from "node:path";
+
+export const INTERNAL_PROTECTED_PATTERNS = [".justnewmcp/checkpoints", ".justnewmcp/checkpoints/*"];
+const SAFE_ENV_TEMPLATES = new Set([".env.example", ".env.sample", ".env.template", ".env.dist"]);
+
+export function isSafeEnvTemplatePath(filePath: string, platform: NodeJS.Platform = process.platform): boolean {
+  const pathLib = platform === "win32" ? path.win32 : path.posix;
+  const base = pathLib.basename(filePath).toLowerCase();
+  return SAFE_ENV_TEMPLATES.has(base);
+}
+
+export function isEnvSecretPath(filePath: string, platform: NodeJS.Platform = process.platform): boolean {
+  const pathLib = platform === "win32" ? path.win32 : path.posix;
+  const base = pathLib.basename(filePath).toLowerCase();
+  if (SAFE_ENV_TEMPLATES.has(base)) return false;
+  return base === ".env" || base.startsWith(".env.");
+}
 
 function normalizeForComparison(filePath: string, platform: NodeJS.Platform): string {
   return platform === "win32" ? filePath.toLowerCase() : filePath;
@@ -14,10 +30,19 @@ export function isPathDenied(
   const normalized = pathLib.normalize(filePath).replaceAll("\\", "/").toLowerCase();
   const base = pathLib.basename(filePath).toLowerCase();
 
+  const isSafeTemplate = SAFE_ENV_TEMPLATES.has(base);
+
   for (const pattern of deniedPatterns) {
     const cleanPattern = pattern.replaceAll("\\", "/").toLowerCase();
+    if (isSafeTemplate && cleanPattern === ".env.*") {
+      continue;
+    }
     if (cleanPattern.includes("/")) {
-      if (normalized.endsWith(`/${cleanPattern}`) || normalized === cleanPattern) {
+      if (
+        normalized.endsWith(`/${cleanPattern}`) ||
+        normalized.includes(`/${cleanPattern}/`) ||
+        normalized === cleanPattern
+      ) {
         return true;
       }
     } else if (new Bun.Glob(cleanPattern).match(base)) {
@@ -70,4 +95,98 @@ export function resolveInsideRoots(
   }
 
   throw new Error(`Path "${targetPath}" is outside allowed workspace roots.`);
+}
+
+export function assertWorkspaceAnchored(
+  expectedCanonicalRoot: string,
+  allowedRoots: string[],
+  platform: NodeJS.Platform = process.platform,
+): string {
+  const currentReal = realpathSync(path.resolve(expectedCanonicalRoot));
+  const expectedNorm = normalizeForComparison(path.resolve(expectedCanonicalRoot), platform);
+  const currentNorm = normalizeForComparison(currentReal, platform);
+  if (currentNorm !== expectedNorm) {
+    throw new Error("Active workspace directory changed or was replaced by a symlink after workspace_init.");
+  }
+  const { resolvedPath } = resolveInsideRoots(currentReal, allowedRoots, platform);
+  return resolvedPath;
+}
+
+export function resolveWritablePathInsideRoot(
+  inputPath: string,
+  workspaceRoot: string,
+  deniedPatterns: string[] = [],
+  platform: NodeJS.Platform = process.platform,
+): string {
+  const realRoot = realpathSync(path.resolve(workspaceRoot));
+  const candidate = path.isAbsolute(inputPath)
+    ? path.resolve(inputPath)
+    : path.resolve(realRoot, inputPath);
+
+  if (!isPathInsideRoot(candidate, realRoot, platform)) {
+    throw new Error(`Path "${inputPath}" is outside the active workspace.`);
+  }
+
+  const combinedDenied = [...deniedPatterns, ...INTERNAL_PROTECTED_PATTERNS];
+  if (isPathDenied(candidate, combinedDenied, platform)) {
+    throw new Error(`Path "${inputPath}" is blocked by security policy.`);
+  }
+
+  // Use lstatSync so dangling symlinks are detected instead of being treated as absent files
+  let targetLstat: ReturnType<typeof lstatSync> | null = null;
+  try {
+    targetLstat = lstatSync(candidate);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
+      throw err;
+    }
+  }
+
+  if (targetLstat) {
+    if (targetLstat.isSymbolicLink()) {
+      let realTarget: string;
+      try {
+        realTarget = realpathSync(candidate);
+      } catch {
+        throw new Error(`Refusing to write through dangling symlink "${inputPath}".`);
+      }
+      if (!isPathInsideRoot(realTarget, realRoot, platform)) {
+        throw new Error(`Symlink "${inputPath}" resolves outside the active workspace.`);
+      }
+      if (isPathDenied(realTarget, combinedDenied, platform)) {
+        throw new Error(`Path "${inputPath}" is blocked by security policy.`);
+      }
+      return realTarget;
+    }
+    const realTarget = realpathSync(candidate);
+    if (!isPathInsideRoot(realTarget, realRoot, platform)) {
+      throw new Error(`Path "${inputPath}" resolves outside the active workspace.`);
+    }
+    if (isPathDenied(realTarget, combinedDenied, platform)) {
+      throw new Error(`Path "${inputPath}" is blocked by security policy.`);
+    }
+    return realTarget;
+  }
+
+  // For new files/dirs, walk up to the deepest existing ancestor and verify its realpath stays inside root
+  let ancestor = path.dirname(candidate);
+  const trailingSegments: string[] = [path.basename(candidate)];
+  while (!existsSync(ancestor)) {
+    const parent = path.dirname(ancestor);
+    if (parent === ancestor) break;
+    trailingSegments.unshift(path.basename(ancestor));
+    ancestor = parent;
+  }
+
+  const realAncestor = realpathSync(ancestor);
+  if (!isPathInsideRoot(realAncestor, realRoot, platform)) {
+    throw new Error(`Parent directory of "${inputPath}" resolves outside the active workspace.`);
+  }
+
+  const finalPath = path.join(realAncestor, ...trailingSegments);
+  if (!isPathInsideRoot(finalPath, realRoot, platform) || isPathDenied(finalPath, combinedDenied, platform)) {
+    throw new Error(`Path "${inputPath}" is blocked by security policy.`);
+  }
+
+  return finalPath;
 }

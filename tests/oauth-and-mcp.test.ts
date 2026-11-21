@@ -35,6 +35,8 @@ describe("OAuth 2.1 security hardening and MCP /mcp integration", () => {
       trustedProxies: ["127.0.0.1", "::1"],
       allowedRoots: [tempRoot],
       deniedPathPatterns: DEFAULT_DENIED_PATH_PATTERNS,
+      allowEnvReading: false,
+      askHumanAllowance: false,
       maxMcpBodyBytes: 4096,
       oauth: {
         clientId,
@@ -157,6 +159,8 @@ describe("OAuth 2.1 security hardening and MCP /mcp integration", () => {
       trustedProxies: [],
       allowedRoots: [tempRoot],
       deniedPathPatterns: DEFAULT_DENIED_PATH_PATTERNS,
+      allowEnvReading: false,
+      askHumanAllowance: false,
       maxMcpBodyBytes: 4096,
       oauth: {
         clientId,
