@@ -450,6 +450,7 @@ describe("filesystem tools and local checkpoints", () => {
       deniedPathPatterns: DEFAULT_DENIED_PATH_PATTERNS,
       allowEnvReading: false,
       askHumanAllowance: true,
+      allowedCommands: [],
       maxMcpBodyBytes: 1_048_576,
       oauth: {
         clientId,
