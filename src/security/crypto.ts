@@ -4,6 +4,10 @@ export function sha256Buffer(input: string): Buffer {
   return createHash("sha256").update(input, "utf8").digest();
 }
 
+export function sha256Hex(input: string): string {
+  return createHash("sha256").update(input, "utf8").digest("hex");
+}
+
 export function timingSafeEqualStrings(a: string, b: string): boolean {
   const digestA = sha256Buffer(a);
   const digestB = sha256Buffer(b);

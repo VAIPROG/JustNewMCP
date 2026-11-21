@@ -2,10 +2,11 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DEFAULT_DENIED_PATH_PATTERNS } from "../src/config.ts";
 import { initializeWorkspace, type WorkspaceState } from "../src/workspace/init.ts";
-import { isPathInsideRoot, resolveInsideRoots } from "../src/workspace/paths.ts";
+import { isPathDenied, isPathInsideRoot, resolveInsideRoots } from "../src/workspace/paths.ts";
 
-describe("workspace path boundaries and init", () => {
+describe("workspace path boundaries, denylist, and init", () => {
   let baseDir: string;
   let allowedRoot: string;
   let siblingRoot: string;
@@ -21,6 +22,7 @@ describe("workspace path boundaries and init", () => {
     mkdirSync(siblingRoot, { recursive: true });
 
     writeFileSync(join(projectDir, "AGENTS.md"), "# Rules\nUse bun test.\n", "utf8");
+    writeFileSync(join(projectDir, ".env"), "SECRET=123\n", "utf8");
     writeFileSync(join(projectDir, ".justnewmcp", "MEMORY.md"), "# Memory\nPort is 8787.\n", "utf8");
     symlinkSync(siblingRoot, join(allowedRoot, "escape-link"));
   });
@@ -39,9 +41,20 @@ describe("workspace path boundaries and init", () => {
     expect(() => resolveInsideRoots(join(allowedRoot, "escape-link"), [allowedRoot])).toThrow();
   });
 
-  test("normalizes case on win32 comparisons", () => {
+  test("normalizes case and rejects cross-drive paths on win32", () => {
     expect(isPathInsideRoot("C:\\Users\\VAI\\Projects\\App", "c:\\users\\vai\\projects", "win32")).toBe(true);
     expect(isPathInsideRoot("D:\\Users\\VAI\\Projects\\App", "c:\\users\\vai\\projects", "win32")).toBe(false);
+  });
+
+  test("blocks sensitive secret paths via deniedPathPatterns", () => {
+    expect(isPathDenied("/repo/.env", DEFAULT_DENIED_PATH_PATTERNS, "linux")).toBe(true);
+    expect(isPathDenied("/repo/.env.production", DEFAULT_DENIED_PATH_PATTERNS, "linux")).toBe(true);
+    expect(isPathDenied("/repo/certs/private.key", DEFAULT_DENIED_PATH_PATTERNS, "linux")).toBe(true);
+    expect(isPathDenied("/repo/.git/config", DEFAULT_DENIED_PATH_PATTERNS, "linux")).toBe(true);
+    expect(isPathDenied("/repo/src/index.ts", DEFAULT_DENIED_PATH_PATTERNS, "linux")).toBe(false);
+    expect(() =>
+      resolveInsideRoots(join(projectDir, ".env"), [allowedRoot], process.platform, DEFAULT_DENIED_PATH_PATTERNS),
+    ).toThrow("blocked by security policy");
   });
 
   test("workspace_init sets active root and reads instructions and memory", async () => {

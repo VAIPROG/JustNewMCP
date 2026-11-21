@@ -1,5 +1,8 @@
 import { z } from "zod";
 import type { AppConfig } from "../config.ts";
+import { extractClientIp } from "../oauth/server.ts";
+import { AuditLogger } from "../security/audit.ts";
+import { readBodyWithinLimit } from "../security/headers.ts";
 import { initializeWorkspace, type WorkspaceState } from "../workspace/init.ts";
 
 interface JsonRpcRequest {
@@ -19,12 +22,26 @@ export class McpRouter {
     matchedAllowedRoot: null,
   };
 
-  constructor(private readonly config: AppConfig) {}
+  constructor(
+    private readonly config: AppConfig,
+    private readonly audit: AuditLogger = new AuditLogger(),
+  ) {}
 
-  async handleRequest(req: Request): Promise<Response> {
+  async handleRequest(req: Request, clientId: string): Promise<Response> {
+    const contentType = req.headers.get("content-type") ?? "";
+    if (!contentType.toLowerCase().includes("application/json")) {
+      return Response.json(
+        { jsonrpc: "2.0", id: null, error: { code: -32600, message: "Content-Type must be application/json" } },
+        { status: 415 },
+      );
+    }
+
+    const bodyRes = await readBodyWithinLimit(req, this.config.maxMcpBodyBytes);
+    if (!bodyRes.ok) return bodyRes.response;
+
     let payload: JsonRpcRequest;
     try {
-      payload = (await req.json()) as JsonRpcRequest;
+      payload = JSON.parse(bodyRes.text) as JsonRpcRequest;
     } catch {
       return Response.json(
         { jsonrpc: "2.0", id: null, error: { code: -32700, message: "Parse error" } },
@@ -33,6 +50,7 @@ export class McpRouter {
     }
 
     const id = payload.id ?? null;
+    const ip = extractClientIp(req);
 
     if (payload.method === "initialize") {
       return Response.json({
@@ -99,6 +117,7 @@ export class McpRouter {
             this.config.allowedRoots,
             this.workspaceState,
           );
+          this.audit.record("mcp.tool.called", ip, { clientId, detail: "workspace_init" });
           return Response.json({
             jsonrpc: "2.0",
             id,
@@ -109,6 +128,7 @@ export class McpRouter {
         }
 
         if (name === "workspace_info") {
+          this.audit.record("mcp.tool.called", ip, { clientId, detail: "workspace_info" });
           return Response.json({
             jsonrpc: "2.0",
             id,
@@ -121,6 +141,7 @@ export class McpRouter {
                       activeRoot: this.workspaceState.activeRoot,
                       matchedAllowedRoot: this.workspaceState.matchedAllowedRoot,
                       allowedRoots: this.config.allowedRoots,
+                      deniedPathPatterns: this.config.deniedPathPatterns,
                     },
                     null,
                     2,
@@ -138,6 +159,7 @@ export class McpRouter {
         });
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
+        this.audit.record("mcp.tool.denied", ip, { clientId, detail: `${name}: ${message}` });
         return Response.json({
           jsonrpc: "2.0",
           id,

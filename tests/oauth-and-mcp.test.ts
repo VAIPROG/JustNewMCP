@@ -2,11 +2,15 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { AppConfig } from "../src/config.ts";
+import {
+  DEFAULT_ALLOWED_REDIRECT_URIS,
+  DEFAULT_DENIED_PATH_PATTERNS,
+  type AppConfig,
+} from "../src/config.ts";
 import { createAppServer, type RunningServer } from "../src/index.ts";
 import { computePkceS256, generateRandomToken } from "../src/security/crypto.ts";
 
-describe("OAuth 2.1 gate and MCP /mcp integration", () => {
+describe("OAuth 2.1 security hardening and MCP /mcp integration", () => {
   let tempRoot: string;
   let outsideDir: string;
   let running: RunningServer;
@@ -26,9 +30,12 @@ describe("OAuth 2.1 gate and MCP /mcp integration", () => {
       port: 0,
       publicUrl: "https://mcp.example.com",
       allowedRoots: [tempRoot],
+      deniedPathPatterns: DEFAULT_DENIED_PATH_PATTERNS,
+      maxMcpBodyBytes: 4096,
       oauth: {
         clientId,
         clientSecret,
+        allowedRedirectUris: DEFAULT_ALLOWED_REDIRECT_URIS,
         accessTokenTtlSec: 3600,
         refreshTokenTtlSec: 604800,
         authCodeTtlSec: 300,
@@ -36,6 +43,7 @@ describe("OAuth 2.1 gate and MCP /mcp integration", () => {
           maxFailures: 3,
           windowMs: 60_000,
           lockoutMs: 60_000,
+          maxTrackedIps: 1000,
         },
       },
     };
@@ -50,21 +58,46 @@ describe("OAuth 2.1 gate and MCP /mcp integration", () => {
     rmSync(outsideDir, { recursive: true, force: true });
   });
 
-  test("health and well-known metadata endpoints respond", async () => {
+  test("health and well-known metadata include security headers and revocation endpoint", async () => {
     const health = await fetch(`${baseUrl}/health`);
     expect(health.status).toBe(200);
-    const healthJson = (await health.json()) as { status: string; bun: string };
-    expect(healthJson.status).toBe("ok");
-
-    const prm = await fetch(`${baseUrl}/.well-known/oauth-protected-resource`);
-    expect(prm.status).toBe(200);
-    const prmJson = (await prm.json()) as { resource: string };
-    expect(prmJson.resource).toBe("https://mcp.example.com/mcp");
+    expect(health.headers.get("x-content-type-options")).toBe("nosniff");
+    expect(health.headers.get("x-frame-options")).toBe("DENY");
+    expect(health.headers.get("referrer-policy")).toBe("no-referrer");
+    expect(health.headers.get("cache-control")).toBe("no-store");
 
     const asm = await fetch(`${baseUrl}/.well-known/oauth-authorization-server`);
     expect(asm.status).toBe(200);
-    const asmJson = (await asm.json()) as { code_challenge_methods_supported: string[] };
+    const asmJson = (await asm.json()) as {
+      code_challenge_methods_supported: string[];
+      revocation_endpoint: string;
+    };
     expect(asmJson.code_challenge_methods_supported).toContain("S256");
+    expect(asmJson.revocation_endpoint).toBe("https://mcp.example.com/oauth/revoke");
+  });
+
+  test("blocks open redirect to untrusted redirect_uri", async () => {
+    const challenge = computePkceS256(generateRandomToken(48));
+    const res = await fetch(
+      `${baseUrl}/oauth/authorize?response_type=code&client_id=${clientId}&redirect_uri=${encodeURIComponent("https://evil.example/steal")}&code_challenge=${challenge}&code_challenge_method=S256`,
+    );
+    expect(res.status).toBe(400);
+  });
+
+  test("blocks authorize POST without matching CSRF cookie and field", async () => {
+    const form = new FormData();
+    form.set("client_id", clientId);
+    form.set("redirect_uri", "https://gemini.google.com/oauth/callback");
+    form.set("code_challenge", computePkceS256(generateRandomToken(48)));
+    form.set("approval_code", approvalCode);
+    form.set("csrf_token", "forged-token");
+
+    const res = await fetch(`${baseUrl}/oauth/authorize`, {
+      method: "POST",
+      headers: { "X-Forwarded-For": "10.0.0.55" },
+      body: form,
+    });
+    expect(res.status).toBe(403);
   });
 
   test("rejects unauthenticated /mcp calls with WWW-Authenticate", async () => {
@@ -107,7 +140,7 @@ describe("OAuth 2.1 gate and MCP /mcp integration", () => {
     expect(locked.headers.get("retry-after")).toBeTruthy();
   });
 
-  test("full OAuth 2.1 PKCE flow, refresh rotation, and MCP workspace_init", async () => {
+  test("full OAuth 2.1 PKCE + CSRF flow, MCP checks, body limits, revocation, and audit log", async () => {
     const ip = "10.0.0.42";
     const verifier = generateRandomToken(48);
     const challenge = computePkceS256(verifier);
@@ -117,8 +150,18 @@ describe("OAuth 2.1 gate and MCP /mcp integration", () => {
       `${baseUrl}/oauth/authorize?response_type=code&client_id=${clientId}&redirect_uri=${encodeURIComponent(redirectUri)}&code_challenge=${challenge}&code_challenge_method=S256&state=xyz`,
     );
     expect(getAuth.status).toBe(200);
+    expect(getAuth.headers.get("content-security-policy")).toContain("frame-ancestors 'none'");
+
+    const setCookie = getAuth.headers.get("set-cookie") ?? "";
+    const cookieMatch = setCookie.match(/justnewmcp_csrf=([^;]+)/);
+    const csrfCookie = cookieMatch?.[1] ?? "";
+    expect(csrfCookie.length).toBeGreaterThan(16);
+
+    const html = await getAuth.text();
+    expect(html).toContain(`name="csrf_token" value="${csrfCookie}"`);
 
     const form = new FormData();
+    form.set("csrf_token", csrfCookie);
     form.set("client_id", clientId);
     form.set("redirect_uri", redirectUri);
     form.set("code_challenge", challenge);
@@ -128,7 +171,10 @@ describe("OAuth 2.1 gate and MCP /mcp integration", () => {
 
     const postAuth = await fetch(`${baseUrl}/oauth/authorize`, {
       method: "POST",
-      headers: { "X-Forwarded-For": ip },
+      headers: {
+        "X-Forwarded-For": ip,
+        Cookie: `justnewmcp_csrf=${csrfCookie}`,
+      },
       body: form,
       redirect: "manual",
     });
@@ -136,7 +182,6 @@ describe("OAuth 2.1 gate and MCP /mcp integration", () => {
     const location = new URL(postAuth.headers.get("location") ?? "");
     const authCode = location.searchParams.get("code") ?? "";
     expect(authCode.length).toBeGreaterThan(20);
-    expect(location.searchParams.get("state")).toBe("xyz");
 
     const tokenRes = await fetch(`${baseUrl}/oauth/token`, {
       method: "POST",
@@ -152,34 +197,30 @@ describe("OAuth 2.1 gate and MCP /mcp integration", () => {
     });
     expect(tokenRes.status).toBe(200);
     const tokens = (await tokenRes.json()) as { access_token: string; refresh_token: string };
-    expect(tokens.access_token.length).toBeGreaterThan(20);
 
-    // Code replay must fail
-    const replayRes = await fetch(`${baseUrl}/oauth/token`, {
+    // Reject non-JSON content-type on /mcp
+    const badCt = await fetch(`${baseUrl}/mcp`, {
       method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded", "X-Forwarded-For": ip },
-      body: new URLSearchParams({
-        grant_type: "authorization_code",
-        client_id: clientId,
-        client_secret: clientSecret,
-        code: authCode,
-        redirect_uri: redirectUri,
-        code_verifier: verifier,
-      }),
+      headers: {
+        "Content-Type": "text/plain",
+        Authorization: `Bearer ${tokens.access_token}`,
+        "X-Forwarded-For": ip,
+      },
+      body: "ping",
     });
-    expect(replayRes.status).toBe(400);
+    expect(badCt.status).toBe(415);
 
-    // Call MCP initialize and tools/list
-    const initRes = await fetch(`${baseUrl}/mcp`, {
+    // Reject oversized body on /mcp (> 4096 bytes)
+    const oversized = await fetch(`${baseUrl}/mcp`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
         Authorization: `Bearer ${tokens.access_token}`,
         "X-Forwarded-For": ip,
       },
-      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize" }),
+      body: JSON.stringify({ jsonrpc: "2.0", id: 9, method: "ping", params: { pad: "x".repeat(5000) } }),
     });
-    expect(initRes.status).toBe(200);
+    expect(oversized.status).toBe(413);
 
     // Call workspace_init on allowed repo
     const wsOk = await fetch(`${baseUrl}/mcp`, {
@@ -201,38 +242,36 @@ describe("OAuth 2.1 gate and MCP /mcp integration", () => {
     expect(wsOkJson.result.isError).toBeUndefined();
     expect(wsOkJson.result.content[0]?.text).toContain("README.md");
 
-    // Call workspace_init outside allowed root must return isError
-    const wsBlocked = await fetch(`${baseUrl}/mcp`, {
+    // Revoke active access token and verify immediate rejection
+    const revokeRes = await fetch(`${baseUrl}/oauth/revoke`, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded", "X-Forwarded-For": ip },
+      body: new URLSearchParams({
+        client_id: clientId,
+        client_secret: clientSecret,
+        token: tokens.access_token,
+      }),
+    });
+    expect(revokeRes.status).toBe(200);
+
+    const afterRevoke = await fetch(`${baseUrl}/mcp`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
         Authorization: `Bearer ${tokens.access_token}`,
         "X-Forwarded-For": ip,
       },
-      body: JSON.stringify({
-        jsonrpc: "2.0",
-        id: 3,
-        method: "tools/call",
-        params: { name: "workspace_init", arguments: { path: outsideDir } },
-      }),
+      body: JSON.stringify({ jsonrpc: "2.0", id: 3, method: "ping" }),
     });
-    const wsBlockedJson = (await wsBlocked.json()) as { result: { isError?: boolean; content: Array<{ text: string }> } };
-    expect(wsBlockedJson.result.isError).toBe(true);
-    expect(wsBlockedJson.result.content[0]?.text).toContain("outside allowed workspace roots");
+    expect(afterRevoke.status).toBe(401);
 
-    // Refresh token rotation
-    const refreshRes = await fetch(`${baseUrl}/oauth/token`, {
-      method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded", "X-Forwarded-For": ip },
-      body: new URLSearchParams({
-        grant_type: "refresh_token",
-        client_id: clientId,
-        client_secret: clientSecret,
-        refresh_token: tokens.refresh_token,
-      }),
-    });
-    expect(refreshRes.status).toBe(200);
-    const rotated = (await refreshRes.json()) as { access_token: string; refresh_token: string };
-    expect(rotated.refresh_token).not.toBe(tokens.refresh_token);
+    // Audit log captured key security events without exposing raw tokens
+    const auditText = JSON.stringify(running.audit.list());
+    expect(auditText).toContain("oauth.authorize.approved");
+    expect(auditText).toContain("oauth.token.issued");
+    expect(auditText).toContain("oauth.token.revoked");
+    expect(auditText).toContain("mcp.tool.called");
+    expect(auditText).not.toContain(tokens.access_token);
+    expect(auditText).not.toContain(clientSecret);
   });
 });

@@ -1,10 +1,13 @@
 import type { AppConfig } from "../config.ts";
+import { AuditLogger } from "../security/audit.ts";
 import {
   generateApprovalCode,
   generateRandomToken,
+  sha256Hex,
   timingSafeEqualStrings,
   verifyPkceS256,
 } from "../security/crypto.ts";
+import { readBodyWithinLimit } from "../security/headers.ts";
 import { IpRateLimiter } from "../security/rate-limiter.ts";
 
 interface AuthCodeRecord {
@@ -20,6 +23,14 @@ interface TokenRecord {
   scope: string;
   expiresAt: number;
 }
+
+interface CsrfRecord {
+  expiresAt: number;
+}
+
+const MAX_OAUTH_BODY_BYTES = 16 * 1024;
+const CSRF_TTL_MS = 10 * 60 * 1000;
+const CSRF_COOKIE_NAME = "justnewmcp_csrf";
 
 function escapeHtml(value: string): string {
   return value
@@ -39,16 +50,76 @@ export function extractClientIp(req: Request): string {
   return "127.0.0.1";
 }
 
+function parseCookie(header: string | null, name: string): string | null {
+  if (!header) return null;
+  for (const part of header.split(";")) {
+    const idx = part.indexOf("=");
+    if (idx === -1) continue;
+    const k = part.slice(0, idx).trim();
+    if (k === name) {
+      return part.slice(idx + 1).trim();
+    }
+  }
+  return null;
+}
+
+export function isAllowedRedirectUri(redirectUri: string, allowlist: string[]): boolean {
+  let parsed: URL;
+  try {
+    parsed = new URL(redirectUri);
+  } catch {
+    return false;
+  }
+
+  if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
+    return false;
+  }
+  if (parsed.protocol === "http:" && parsed.hostname !== "127.0.0.1" && parsed.hostname !== "localhost") {
+    return false;
+  }
+
+  return allowlist.some((prefix) => {
+    try {
+      const allowed = new URL(prefix);
+      if (allowed.origin !== parsed.origin) return false;
+      if (allowed.pathname === "/" || allowed.pathname === "") return true;
+      return parsed.pathname.startsWith(allowed.pathname);
+    } catch {
+      return false;
+    }
+  });
+}
+
 export class OAuthServer {
   private readonly rateLimiter: IpRateLimiter;
   private readonly authCodes = new Map<string, AuthCodeRecord>();
   private readonly accessTokens = new Map<string, TokenRecord>();
   private readonly refreshTokens = new Map<string, TokenRecord>();
+  private readonly csrfTokens = new Map<string, CsrfRecord>();
   private approvalCode: string;
 
-  constructor(private readonly config: AppConfig, initialApprovalCode?: string) {
+  constructor(
+    private readonly config: AppConfig,
+    private readonly audit: AuditLogger = new AuditLogger(),
+    initialApprovalCode?: string,
+  ) {
     this.rateLimiter = new IpRateLimiter(config.oauth.rateLimit);
     this.approvalCode = initialApprovalCode ?? generateApprovalCode();
+  }
+
+  private pruneExpired(now = Date.now()): void {
+    for (const [k, v] of this.authCodes) {
+      if (v.expiresAt <= now) this.authCodes.delete(k);
+    }
+    for (const [k, v] of this.accessTokens) {
+      if (v.expiresAt <= now) this.accessTokens.delete(k);
+    }
+    for (const [k, v] of this.refreshTokens) {
+      if (v.expiresAt <= now) this.refreshTokens.delete(k);
+    }
+    for (const [k, v] of this.csrfTokens) {
+      if (v.expiresAt <= now) this.csrfTokens.delete(k);
+    }
   }
 
   getApprovalCode(): string {
@@ -74,6 +145,7 @@ export class OAuthServer {
       issuer: this.config.publicUrl,
       authorization_endpoint: `${this.config.publicUrl}/oauth/authorize`,
       token_endpoint: `${this.config.publicUrl}/oauth/token`,
+      revocation_endpoint: `${this.config.publicUrl}/oauth/revoke`,
       response_types_supported: ["code"],
       grant_types_supported: ["authorization_code", "refresh_token"],
       code_challenge_methods_supported: ["S256"],
@@ -83,6 +155,7 @@ export class OAuthServer {
   }
 
   async handleAuthorizeGet(req: Request): Promise<Response> {
+    this.pruneExpired();
     const url = new URL(req.url);
     const clientId = url.searchParams.get("client_id") ?? "";
     const redirectUri = url.searchParams.get("redirect_uri") ?? "";
@@ -98,12 +171,15 @@ export class OAuthServer {
     if (!timingSafeEqualStrings(clientId, this.config.oauth.clientId)) {
       return new Response("Unknown client_id", { status: 400 });
     }
-    if (!redirectUri.startsWith("https://") && !redirectUri.startsWith("http://127.0.0.1") && !redirectUri.startsWith("http://localhost")) {
-      return new Response("Invalid redirect_uri", { status: 400 });
+    if (!isAllowedRedirectUri(redirectUri, this.config.oauth.allowedRedirectUris)) {
+      return new Response("Disallowed redirect_uri", { status: 400 });
     }
     if (!codeChallenge || codeChallengeMethod !== "S256") {
       return new Response("PKCE S256 is required", { status: 400 });
     }
+
+    const csrfToken = generateRandomToken(24);
+    this.csrfTokens.set(sha256Hex(csrfToken), { expiresAt: Date.now() + CSRF_TTL_MS });
 
     const html = `<!doctype html>
 <html lang="en">
@@ -121,6 +197,7 @@ export class OAuthServer {
   <h1>Approve MCP access</h1>
   <p>Client <code>${escapeHtml(clientId)}</code> is requesting scope <code>${escapeHtml(scope)}</code>.</p>
   <form method="POST" action="/oauth/authorize">
+    <input type="hidden" name="csrf_token" value="${escapeHtml(csrfToken)}" />
     <input type="hidden" name="client_id" value="${escapeHtml(clientId)}" />
     <input type="hidden" name="redirect_uri" value="${escapeHtml(redirectUri)}" />
     <input type="hidden" name="code_challenge" value="${escapeHtml(codeChallenge)}" />
@@ -133,19 +210,24 @@ export class OAuthServer {
 </body>
 </html>`;
 
+    const secureFlag = this.config.publicUrl.startsWith("https://") ? "; Secure" : "";
     return new Response(html, {
       status: 200,
       headers: {
         "Content-Type": "text/html; charset=utf-8",
-        "Cache-Control": "no-store",
+        "Content-Security-Policy":
+          "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'",
+        "Set-Cookie": `${CSRF_COOKIE_NAME}=${csrfToken}; HttpOnly; SameSite=Strict; Path=/oauth/authorize${secureFlag}`,
       },
     });
   }
 
   async handleAuthorizePost(req: Request): Promise<Response> {
+    this.pruneExpired();
     const ip = extractClientIp(req);
     const gate = this.rateLimiter.check(ip);
     if (!gate.allowed) {
+      this.audit.record("oauth.rate_limited", ip, { detail: "authorize" });
       return new Response("Too many failed attempts", {
         status: 429,
         headers: { "Retry-After": String(gate.retryAfterSec) },
@@ -153,6 +235,24 @@ export class OAuthServer {
     }
 
     const form = await req.formData();
+    const csrfField = String(form.get("csrf_token") ?? "");
+    const csrfCookie = parseCookie(req.headers.get("cookie"), CSRF_COOKIE_NAME) ?? "";
+    const csrfHash = sha256Hex(csrfField);
+    const csrfRecord = this.csrfTokens.get(csrfHash);
+    this.csrfTokens.delete(csrfHash);
+
+    if (
+      !csrfField ||
+      !csrfCookie ||
+      !csrfRecord ||
+      csrfRecord.expiresAt < Date.now() ||
+      !timingSafeEqualStrings(csrfField, csrfCookie)
+    ) {
+      this.rateLimiter.recordFailure(ip);
+      this.audit.record("oauth.authorize.denied", ip, { detail: "invalid_csrf" });
+      return new Response("Invalid CSRF token", { status: 403 });
+    }
+
     const clientId = String(form.get("client_id") ?? "");
     const redirectUri = String(form.get("redirect_uri") ?? "");
     const codeChallenge = String(form.get("code_challenge") ?? "");
@@ -162,11 +262,19 @@ export class OAuthServer {
 
     if (!timingSafeEqualStrings(clientId, this.config.oauth.clientId)) {
       this.rateLimiter.recordFailure(ip);
+      this.audit.record("oauth.authorize.denied", ip, { detail: "invalid_client" });
       return new Response("Invalid client_id", { status: 400 });
+    }
+
+    if (!isAllowedRedirectUri(redirectUri, this.config.oauth.allowedRedirectUris)) {
+      this.rateLimiter.recordFailure(ip);
+      this.audit.record("oauth.authorize.denied", ip, { clientId, detail: "disallowed_redirect_uri" });
+      return new Response("Disallowed redirect_uri", { status: 400 });
     }
 
     if (!timingSafeEqualStrings(submittedCode, this.approvalCode)) {
       const fail = this.rateLimiter.recordFailure(ip);
+      this.audit.record("oauth.authorize.denied", ip, { clientId, detail: "invalid_approval_code" });
       return new Response("Invalid approval code", {
         status: fail.locked ? 429 : 403,
         headers: fail.locked ? { "Retry-After": String(fail.retryAfterSec) } : undefined,
@@ -175,9 +283,10 @@ export class OAuthServer {
 
     this.rateLimiter.recordSuccess(ip);
     this.rotateApprovalCode();
+    this.audit.record("oauth.authorize.approved", ip, { clientId });
 
     const code = generateRandomToken(32);
-    this.authCodes.set(code, {
+    this.authCodes.set(sha256Hex(code), {
       clientId,
       redirectUri,
       codeChallenge,
@@ -195,7 +304,6 @@ export class OAuthServer {
       status: 302,
       headers: {
         Location: target.toString(),
-        "Cache-Control": "no-store",
       },
     });
   }
@@ -218,27 +326,36 @@ export class OAuthServer {
     };
   }
 
+  private verifyClient(req: Request, params: URLSearchParams): { ok: boolean; clientId: string } {
+    const { clientId, clientSecret } = this.extractClientCredentials(req, params);
+    const valid =
+      timingSafeEqualStrings(clientId, this.config.oauth.clientId) &&
+      timingSafeEqualStrings(clientSecret, this.config.oauth.clientSecret);
+    return { ok: valid, clientId };
+  }
+
   async handleToken(req: Request): Promise<Response> {
+    this.pruneExpired();
     const ip = extractClientIp(req);
     const gate = this.rateLimiter.check(ip);
     if (!gate.allowed) {
+      this.audit.record("oauth.rate_limited", ip, { detail: "token" });
       return Response.json(
         { error: "temporarily_unavailable", error_description: "Rate limit exceeded" },
         { status: 429, headers: { "Retry-After": String(gate.retryAfterSec) } },
       );
     }
 
-    const text = await req.text();
-    const params = new URLSearchParams(text);
+    const bodyRes = await readBodyWithinLimit(req, MAX_OAUTH_BODY_BYTES);
+    if (!bodyRes.ok) return bodyRes.response;
+
+    const params = new URLSearchParams(bodyRes.text);
     const grantType = params.get("grant_type") ?? "";
-    const { clientId, clientSecret } = this.extractClientCredentials(req, params);
+    const client = this.verifyClient(req, params);
 
-    const clientValid =
-      timingSafeEqualStrings(clientId, this.config.oauth.clientId) &&
-      timingSafeEqualStrings(clientSecret, this.config.oauth.clientSecret);
-
-    if (!clientValid) {
+    if (!client.ok) {
       const fail = this.rateLimiter.recordFailure(ip);
+      this.audit.record("oauth.token.denied", ip, { detail: "invalid_client" });
       return Response.json(
         { error: "invalid_client" },
         {
@@ -253,38 +370,77 @@ export class OAuthServer {
       const redirectUri = params.get("redirect_uri") ?? "";
       const codeVerifier = params.get("code_verifier") ?? "";
 
-      const record = this.authCodes.get(code);
-      this.authCodes.delete(code);
+      const codeHash = sha256Hex(code);
+      const record = this.authCodes.get(codeHash);
+      this.authCodes.delete(codeHash);
 
       if (!record || record.expiresAt < Date.now() || record.redirectUri !== redirectUri) {
         this.rateLimiter.recordFailure(ip);
+        this.audit.record("oauth.token.denied", ip, { clientId: client.clientId, detail: "invalid_code" });
         return Response.json({ error: "invalid_grant" }, { status: 400 });
       }
 
       if (!verifyPkceS256(codeVerifier, record.codeChallenge)) {
         this.rateLimiter.recordFailure(ip);
+        this.audit.record("oauth.token.denied", ip, { clientId: client.clientId, detail: "pkce_mismatch" });
         return Response.json({ error: "invalid_grant", error_description: "PKCE verification failed" }, { status: 400 });
       }
 
       this.rateLimiter.recordSuccess(ip);
+      this.audit.record("oauth.token.issued", ip, { clientId: record.clientId, detail: "authorization_code" });
       return this.issueTokenPair(record.clientId, record.scope);
     }
 
     if (grantType === "refresh_token") {
       const refresh = params.get("refresh_token") ?? "";
-      const record = this.refreshTokens.get(refresh);
-      this.refreshTokens.delete(refresh);
+      const refreshHash = sha256Hex(refresh);
+      const record = this.refreshTokens.get(refreshHash);
+      this.refreshTokens.delete(refreshHash);
 
-      if (!record || record.expiresAt < Date.now() || record.clientId !== clientId) {
+      if (!record || record.expiresAt < Date.now() || record.clientId !== client.clientId) {
         this.rateLimiter.recordFailure(ip);
+        this.audit.record("oauth.token.denied", ip, { clientId: client.clientId, detail: "invalid_refresh_token" });
         return Response.json({ error: "invalid_grant" }, { status: 400 });
       }
 
       this.rateLimiter.recordSuccess(ip);
+      this.audit.record("oauth.token.issued", ip, { clientId: record.clientId, detail: "refresh_token" });
       return this.issueTokenPair(record.clientId, record.scope);
     }
 
     return Response.json({ error: "unsupported_grant_type" }, { status: 400 });
+  }
+
+  async handleRevoke(req: Request): Promise<Response> {
+    this.pruneExpired();
+    const ip = extractClientIp(req);
+    const gate = this.rateLimiter.check(ip);
+    if (!gate.allowed) {
+      return Response.json(
+        { error: "temporarily_unavailable" },
+        { status: 429, headers: { "Retry-After": String(gate.retryAfterSec) } },
+      );
+    }
+
+    const bodyRes = await readBodyWithinLimit(req, MAX_OAUTH_BODY_BYTES);
+    if (!bodyRes.ok) return bodyRes.response;
+
+    const params = new URLSearchParams(bodyRes.text);
+    const client = this.verifyClient(req, params);
+    if (!client.ok) {
+      this.rateLimiter.recordFailure(ip);
+      return Response.json({ error: "invalid_client" }, { status: 401 });
+    }
+
+    const token = params.get("token") ?? "";
+    if (token) {
+      const hash = sha256Hex(token);
+      this.accessTokens.delete(hash);
+      this.refreshTokens.delete(hash);
+      this.audit.record("oauth.token.revoked", ip, { clientId: client.clientId });
+    }
+
+    return new Response(null, { status: 200 });
   }
 
   private issueTokenPair(clientId: string, scope: string): Response {
@@ -292,12 +448,12 @@ export class OAuthServer {
     const accessToken = generateRandomToken(32);
     const refreshToken = generateRandomToken(32);
 
-    this.accessTokens.set(accessToken, {
+    this.accessTokens.set(sha256Hex(accessToken), {
       clientId,
       scope,
       expiresAt: now + this.config.oauth.accessTokenTtlSec * 1000,
     });
-    this.refreshTokens.set(refreshToken, {
+    this.refreshTokens.set(sha256Hex(refreshToken), {
       clientId,
       scope,
       expiresAt: now + this.config.oauth.refreshTokenTtlSec * 1000,
@@ -311,17 +467,16 @@ export class OAuthServer {
         refresh_token: refreshToken,
         scope,
       },
-      {
-        status: 200,
-        headers: { "Cache-Control": "no-store" },
-      },
+      { status: 200 },
     );
   }
 
   authenticateBearer(req: Request): { ok: true; clientId: string; scope: string } | { ok: false; response: Response } {
+    this.pruneExpired();
     const ip = extractClientIp(req);
     const gate = this.rateLimiter.check(ip);
     if (!gate.allowed) {
+      this.audit.record("oauth.rate_limited", ip, { detail: "mcp_bearer" });
       return {
         ok: false,
         response: new Response("Too many failed attempts", {
@@ -336,13 +491,14 @@ export class OAuthServer {
     const token = match?.[1]?.trim();
 
     if (token) {
-      const record = this.accessTokens.get(token);
+      const record = this.accessTokens.get(sha256Hex(token));
       if (record && record.expiresAt > Date.now()) {
         return { ok: true, clientId: record.clientId, scope: record.scope };
       }
     }
 
     this.rateLimiter.recordFailure(ip);
+    this.audit.record("mcp.auth.denied", ip);
     const metadataUrl = `${this.config.publicUrl}/.well-known/oauth-protected-resource`;
     return {
       ok: false,

@@ -2,56 +2,55 @@ import { loadConfig, type AppConfig } from "./config.ts";
 import { McpRouter } from "./mcp/server.ts";
 import { OAuthServer } from "./oauth/server.ts";
 import { ensureBunVersion } from "./runtime/bun-version.ts";
+import { AuditLogger } from "./security/audit.ts";
+import { withSecurityHeaders } from "./security/headers.ts";
 
 export interface RunningServer {
   server: ReturnType<typeof Bun.serve>;
   oauth: OAuthServer;
   mcp: McpRouter;
+  audit: AuditLogger;
 }
 
 export function createAppServer(config: AppConfig, initialApprovalCode?: string): RunningServer {
   ensureBunVersion("1.4.0");
-  const oauth = new OAuthServer(config, initialApprovalCode);
-  const mcp = new McpRouter(config);
+  const audit = new AuditLogger();
+  const oauth = new OAuthServer(config, audit, initialApprovalCode);
+  const mcp = new McpRouter(config, audit);
 
   const server = Bun.serve({
     hostname: config.host,
     port: config.port,
     async fetch(req: Request): Promise<Response> {
       const url = new URL(req.url);
+      let res: Response;
 
       if (req.method === "GET" && url.pathname === "/health") {
-        return Response.json({ status: "ok", bun: Bun.version });
-      }
-
-      if (req.method === "GET" && url.pathname === "/.well-known/oauth-protected-resource") {
-        return oauth.handleProtectedResourceMetadata();
-      }
-
-      if (req.method === "GET" && url.pathname === "/.well-known/oauth-authorization-server") {
-        return oauth.handleAuthorizationServerMetadata();
-      }
-
-      if (url.pathname === "/oauth/authorize") {
-        if (req.method === "GET") return oauth.handleAuthorizeGet(req);
-        if (req.method === "POST") return oauth.handleAuthorizePost(req);
-      }
-
-      if (req.method === "POST" && url.pathname === "/oauth/token") {
-        return oauth.handleToken(req);
-      }
-
-      if (req.method === "POST" && url.pathname === "/mcp") {
+        res = Response.json({ status: "ok", bun: Bun.version });
+      } else if (req.method === "GET" && url.pathname === "/.well-known/oauth-protected-resource") {
+        res = oauth.handleProtectedResourceMetadata();
+      } else if (req.method === "GET" && url.pathname === "/.well-known/oauth-authorization-server") {
+        res = oauth.handleAuthorizationServerMetadata();
+      } else if (url.pathname === "/oauth/authorize" && req.method === "GET") {
+        res = await oauth.handleAuthorizeGet(req);
+      } else if (url.pathname === "/oauth/authorize" && req.method === "POST") {
+        res = await oauth.handleAuthorizePost(req);
+      } else if (req.method === "POST" && url.pathname === "/oauth/token") {
+        res = await oauth.handleToken(req);
+      } else if (req.method === "POST" && url.pathname === "/oauth/revoke") {
+        res = await oauth.handleRevoke(req);
+      } else if (req.method === "POST" && url.pathname === "/mcp") {
         const auth = oauth.authenticateBearer(req);
-        if (!auth.ok) return auth.response;
-        return mcp.handleRequest(req);
+        res = auth.ok ? await mcp.handleRequest(req, auth.clientId) : auth.response;
+      } else {
+        res = new Response("Not Found", { status: 404 });
       }
 
-      return new Response("Not Found", { status: 404 });
+      return withSecurityHeaders(res);
     },
   });
 
-  return { server, oauth, mcp };
+  return { server, oauth, mcp, audit };
 }
 
 if (import.meta.main) {
