@@ -1,5 +1,6 @@
-import { existsSync, readFileSync, statSync } from "node:fs";
+import { existsSync, statSync } from "node:fs";
 import { join } from "node:path";
+import { readMemoryPreview } from "./memory.ts";
 import { resolveInsideRoots } from "./paths.ts";
 
 export interface WorkspaceState {
@@ -11,44 +12,30 @@ export interface WorkspaceInitResult {
   workspace: string;
   matchedAllowedRoot: string;
   instructionFiles: string[];
+  memoryDir: string;
   memoryPreview: string | null;
+  memoryTopics: string[];
   gitStatus: string | null;
 }
 
 const INSTRUCTION_CANDIDATES = ["AGENTS.md", "CLAUDE.md", "README.md"];
-const MEMORY_MAX_LINES = 200;
-const MEMORY_MAX_BYTES = 25 * 1024;
-
-function readMemoryPreview(workspaceDir: string, deniedPatterns: string[] = []): string | null {
-  const memoryPath = join(workspaceDir, ".justnewmcp", "MEMORY.md");
-  if (!existsSync(memoryPath)) return null;
-
-  let resolvedMemoryPath: string;
-  try {
-    const resolved = resolveInsideRoots(memoryPath, [workspaceDir], process.platform, deniedPatterns);
-    resolvedMemoryPath = resolved.resolvedPath;
-  } catch {
-    return null;
-  }
-
-  if (!statSync(resolvedMemoryPath).isFile()) return null;
-
-  const raw = readFileSync(resolvedMemoryPath, "utf8");
-  const lines = raw.split(/\r?\n/).slice(0, MEMORY_MAX_LINES).join("\n");
-  if (Buffer.byteLength(lines, "utf8") <= MEMORY_MAX_BYTES) {
-    return lines;
-  }
-  return Buffer.from(lines, "utf8").subarray(0, MEMORY_MAX_BYTES).toString("utf8");
-}
 
 async function readGitStatus(workspaceDir: string): Promise<string | null> {
   if (!existsSync(join(workspaceDir, ".git"))) return null;
   try {
-    const proc = Bun.spawn(["git", "status", "--short", "--branch"], {
-      cwd: workspaceDir,
-      stdout: "pipe",
-      stderr: "pipe",
-    });
+    const proc = Bun.spawn(
+      ["git", "-c", "core.fsmonitor=false", "status", "--short", "--branch"],
+      {
+        cwd: workspaceDir,
+        stdout: "pipe",
+        stderr: "pipe",
+        env: {
+          ...process.env,
+          GIT_TERMINAL_PROMPT: "0",
+          GIT_CONFIG_NOSYSTEM: "1",
+        },
+      },
+    );
     const stdout = await new Response(proc.stdout).text();
     const exitCode = await proc.exited;
     if (exitCode !== 0) return null;
@@ -58,11 +45,16 @@ async function readGitStatus(workspaceDir: string): Promise<string | null> {
   }
 }
 
+export interface WorkspaceInitOptions {
+  deniedPatterns?: string[];
+  memoryDir?: string;
+}
+
 export async function initializeWorkspace(
   targetPath: string,
   allowedRoots: string[],
   state: WorkspaceState,
-  deniedPatterns: string[] = [],
+  options: WorkspaceInitOptions = {},
 ): Promise<WorkspaceInitResult> {
   const { resolvedPath, matchedRoot } = resolveInsideRoots(targetPath, allowedRoots);
   if (!statSync(resolvedPath).isDirectory()) {
@@ -75,14 +67,19 @@ export async function initializeWorkspace(
   const instructionFiles = INSTRUCTION_CANDIDATES.filter((file) =>
     existsSync(join(resolvedPath, file)),
   );
-  const memoryPreview = readMemoryPreview(resolvedPath, deniedPatterns);
+  const memory = await readMemoryPreview(resolvedPath, {
+    memoryRoot: options.memoryDir,
+    deniedPatterns: options.deniedPatterns,
+  });
   const gitStatus = await readGitStatus(resolvedPath);
 
   return {
     workspace: resolvedPath,
     matchedAllowedRoot: matchedRoot,
     instructionFiles,
-    memoryPreview,
+    memoryDir: memory.memoryDir,
+    memoryPreview: memory.preview,
+    memoryTopics: memory.topics,
     gitStatus,
   };
 }

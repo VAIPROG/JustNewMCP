@@ -114,7 +114,10 @@ export class McpRouter {
             parsed.path,
             this.config.allowedRoots,
             this.workspaceState,
-            this.config.deniedPathPatterns,
+            {
+              deniedPatterns: this.config.deniedPathPatterns,
+              memoryDir: this.config.memoryDir,
+            },
           );
           this.audit.record("mcp.tool.called", ip, { clientId, detail: "workspace_init" });
           return Response.json({

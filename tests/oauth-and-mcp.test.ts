@@ -195,6 +195,53 @@ describe("OAuth 2.1 security hardening and MCP /mcp integration", () => {
     }
   });
 
+  test("walks X-Forwarded-For right-to-left so spoofed leftmost IPs cannot bypass rate limiting", async () => {
+    const first = await fetch(`${baseUrl}/oauth/token`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded",
+        "X-Forwarded-For": "198.51.100.1, 203.0.113.77, 127.0.0.1",
+      },
+      body: new URLSearchParams({
+        grant_type: "authorization_code",
+        client_id: clientId,
+        client_secret: "wrong",
+        code: "fake",
+      }),
+    });
+    expect(first.status).toBe(401);
+
+    const second = await fetch(`${baseUrl}/oauth/token`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded",
+        "X-Forwarded-For": "198.51.100.2, 203.0.113.77, 127.0.0.1",
+      },
+      body: new URLSearchParams({
+        grant_type: "authorization_code",
+        client_id: clientId,
+        client_secret: "wrong",
+        code: "fake",
+      }),
+    });
+    expect(second.status).toBe(401);
+
+    const third = await fetch(`${baseUrl}/oauth/token`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded",
+        "X-Forwarded-For": "198.51.100.3, 203.0.113.77, 127.0.0.1",
+      },
+      body: new URLSearchParams({
+        grant_type: "authorization_code",
+        client_id: clientId,
+        client_secret: "wrong",
+        code: "fake",
+      }),
+    });
+    expect(third.status).toBe(429);
+  });
+
   test("rejects unauthenticated /mcp calls with WWW-Authenticate", async () => {
     const res = await fetch(`${baseUrl}/mcp`, {
       method: "POST",

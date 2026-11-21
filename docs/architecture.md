@@ -12,7 +12,7 @@ JustNewMCP is a cross-platform MCP server written in TypeScript for Bun, targeti
 
 1. **Workspace and isolation.** `workspace_init` switches inside config-approved roots after `path.resolve` and `fs.realpath` checks, loading `AGENTS.md` or `CLAUDE.md`, `git status`, and the project memory index. Phase 2 adds `worktree_enter` and `worktree_exit`.
 2. **Files and checkpoints.** `read` with line numbers and ranges, `edit` with read-before-edit and unique-match checks, `write`, `glob`, and `grep` respecting `.gitignore`. Every mutating file call saves a pre-edit snapshot for `checkpoint_list` and `checkpoint_rewind`.
-3. **Project memory.** `memory_read`, `memory_write`, and `memory_search` backed by a per-project `MEMORY.md` index capped at 200 lines or 25 KB on session start.
+3. **Project memory.** `memory_read`, `memory_write`, and `memory_search` backed by a compact `MEMORY.md` index (bounded 25 KB / 200-line read) linking to topic folders like `how-to-use-user-machine/INDEX.md`. Stored either in `<workspace>/.justnewmcp/memory/` or under a configured `memoryDir/<normalized-workspace-slug>/` (for example `C--Users--vaiprog--SomeCoolProject`).
 4. **Tasks and plan mode.** Server-side `task_create`, `task_update`, `task_list`, and `task_get`, plus `plan_enter` and `plan_exit` that enforce read-only access in code while active.
 5. **Allowlisted execution.** `run_allowed_cmd` validates binary name and `argv` patterns from local config and spawns processes via `Bun.spawn` with no shell. Outputs over 30K characters spill to a temp file and return a 2K preview plus file path.
 6. **On-demand tool search.** Phase 2 exposes core tools plus `tool_search` upfront and activates extended modules on demand.

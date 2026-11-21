@@ -1,42 +1,77 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DEFAULT_DENIED_PATH_PATTERNS } from "../src/config.ts";
 import { initializeWorkspace, type WorkspaceState } from "../src/workspace/init.ts";
+import { MEMORY_MAX_BYTES, normalizeWorkspaceSlug } from "../src/workspace/memory.ts";
 import { isPathDenied, isPathInsideRoot, resolveInsideRoots } from "../src/workspace/paths.ts";
 
-describe("workspace path boundaries, denylist, and init", () => {
+describe("workspace path boundaries, memory layout, and init", () => {
   let baseDir: string;
   let allowedRoot: string;
   let siblingRoot: string;
+  let centralMemoryRoot: string;
   let projectDir: string;
   let symlinkMemoryProject: string;
+  let hugeMemoryProject: string;
 
   beforeAll(() => {
     baseDir = mkdtempSync(join(tmpdir(), "justnewmcp-test-"));
     allowedRoot = join(baseDir, "projects");
     siblingRoot = join(baseDir, "projects-evil");
+    centralMemoryRoot = join(baseDir, "JustNewMCP-Memory");
     projectDir = join(allowedRoot, "demo-app");
     symlinkMemoryProject = join(allowedRoot, "symlink-memory-app");
+    hugeMemoryProject = join(allowedRoot, "huge-memory-app");
 
-    mkdirSync(join(projectDir, ".justnewmcp"), { recursive: true });
-    mkdirSync(join(symlinkMemoryProject, ".justnewmcp"), { recursive: true });
+    mkdirSync(join(projectDir, ".justnewmcp", "memory", "how-to-use-user-machine"), { recursive: true });
+    mkdirSync(join(symlinkMemoryProject, ".justnewmcp", "memory"), { recursive: true });
+    mkdirSync(join(hugeMemoryProject, ".justnewmcp", "memory"), { recursive: true });
     mkdirSync(siblingRoot, { recursive: true });
+    mkdirSync(centralMemoryRoot, { recursive: true });
 
     writeFileSync(join(projectDir, "AGENTS.md"), "# Rules\nUse bun test.\n", "utf8");
     writeFileSync(join(projectDir, ".env"), "SECRET=123\n", "utf8");
-    writeFileSync(join(projectDir, ".justnewmcp", "MEMORY.md"), "# Memory\nPort is 8787.\n", "utf8");
+    writeFileSync(
+      join(projectDir, ".justnewmcp", "memory", "MEMORY.md"),
+      "# Memory\nPort is 8787.\nSee how-to-use-user-machine/INDEX.md.\n",
+      "utf8",
+    );
+    writeFileSync(
+      join(projectDir, ".justnewmcp", "memory", "how-to-use-user-machine", "INDEX.md"),
+      "# Machine Guide\n",
+      "utf8",
+    );
     writeFileSync(join(siblingRoot, "outside-secret.txt"), "TOP_SECRET_OUTSIDE\n", "utf8");
     symlinkSync(siblingRoot, join(allowedRoot, "escape-link"));
     symlinkSync(
       join(siblingRoot, "outside-secret.txt"),
-      join(symlinkMemoryProject, ".justnewmcp", "MEMORY.md"),
+      join(symlinkMemoryProject, ".justnewmcp", "memory", "MEMORY.md"),
     );
+
+    // Oversized MEMORY.md (> 25 KiB) to verify bounded slice read
+    writeFileSync(join(hugeMemoryProject, ".justnewmcp", "memory", "MEMORY.md"), "A".repeat(40_000), "utf8");
+
+    // Centralized memory directory using normalized slug of real projectDir
+    const realProjectDir = realpathSync(projectDir);
+    const slugDir = join(centralMemoryRoot, normalizeWorkspaceSlug(realProjectDir));
+    mkdirSync(join(slugDir, "deploy-notes"), { recursive: true });
+    writeFileSync(join(slugDir, "MEMORY.md"), "# Central Memory\nStored outside repo.\n", "utf8");
   });
 
   afterAll(() => {
     rmSync(baseDir, { recursive: true, force: true });
+  });
+
+  test("normalizes workspace paths into cross-platform slugs", () => {
+    expect(normalizeWorkspaceSlug("C:\\Users\\vaiprog\\SomeCoolProject")).toBe(
+      "C--Users--vaiprog--SomeCoolProject",
+    );
+    expect(normalizeWorkspaceSlug("D:/Work/My App/")).toBe("D--Work--My_App");
+    expect(normalizeWorkspaceSlug("/home/vaiprog/SomeCoolProject")).toBe(
+      "home--vaiprog--SomeCoolProject",
+    );
   });
 
   test("rejects sibling prefix and traversal paths", () => {
@@ -65,24 +100,45 @@ describe("workspace path boundaries, denylist, and init", () => {
     ).toThrow("blocked by security policy");
   });
 
-  test("workspace_init sets active root and reads instructions and memory", async () => {
+  test("workspace_init loads workspace-local .justnewmcp/memory/MEMORY.md and topics", async () => {
     const state: WorkspaceState = { activeRoot: null, matchedAllowedRoot: null };
-    const result = await initializeWorkspace(projectDir, [allowedRoot], state, DEFAULT_DENIED_PATH_PATTERNS);
+    const result = await initializeWorkspace(projectDir, [allowedRoot], state, {
+      deniedPatterns: DEFAULT_DENIED_PATH_PATTERNS,
+    });
 
     expect(state.activeRoot).toBe(result.workspace);
     expect(result.instructionFiles).toContain("AGENTS.md");
     expect(result.memoryPreview).toContain("Port is 8787.");
+    expect(result.memoryTopics).toContain("how-to-use-user-machine/");
+  });
+
+  test("workspace_init loads centralized memoryDir/<normalized-slug>/MEMORY.md when configured", async () => {
+    const state: WorkspaceState = { activeRoot: null, matchedAllowedRoot: null };
+    const result = await initializeWorkspace(projectDir, [allowedRoot], state, {
+      deniedPatterns: DEFAULT_DENIED_PATH_PATTERNS,
+      memoryDir: centralMemoryRoot,
+    });
+
+    expect(result.memoryPreview).toContain("Stored outside repo.");
+    expect(result.memoryTopics).toContain("deploy-notes/");
   });
 
   test("workspace_init refuses to follow MEMORY.md symlink outside workspace root", async () => {
     const state: WorkspaceState = { activeRoot: null, matchedAllowedRoot: null };
-    const result = await initializeWorkspace(
-      symlinkMemoryProject,
-      [allowedRoot],
-      state,
-      DEFAULT_DENIED_PATH_PATTERNS,
-    );
+    const result = await initializeWorkspace(symlinkMemoryProject, [allowedRoot], state, {
+      deniedPatterns: DEFAULT_DENIED_PATH_PATTERNS,
+    });
 
     expect(result.memoryPreview).toBeNull();
+  });
+
+  test("workspace_init bounds MEMORY.md disk read to 25 KiB", async () => {
+    const state: WorkspaceState = { activeRoot: null, matchedAllowedRoot: null };
+    const result = await initializeWorkspace(hugeMemoryProject, [allowedRoot], state, {
+      deniedPatterns: DEFAULT_DENIED_PATH_PATTERNS,
+    });
+
+    expect(result.memoryPreview).not.toBeNull();
+    expect(Buffer.byteLength(result.memoryPreview ?? "", "utf8")).toBe(MEMORY_MAX_BYTES);
   });
 });

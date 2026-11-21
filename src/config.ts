@@ -42,6 +42,7 @@ export const ConfigSchema = z.object({
   publicUrl: z.string().url().transform((u) => u.replace(/\/+$/, "")),
   trustedProxies: z.array(z.string().min(1)).default([]),
   allowedRoots: z.array(z.string().min(1)).min(1),
+  memoryDir: z.string().min(1).optional(),
   deniedPathPatterns: z.array(z.string().min(1)).default(DEFAULT_DENIED_PATH_PATTERNS),
   maxMcpBodyBytes: z.number().int().min(1024).default(1_048_576),
   oauth: OAuthConfigSchema,
@@ -70,6 +71,7 @@ export function loadConfig(configPath?: string): AppConfig {
     allowedRoots: process.env.JUSTNEWMCP_ALLOWED_ROOTS
       ? process.env.JUSTNEWMCP_ALLOWED_ROOTS.split(",").map((s) => s.trim()).filter(Boolean)
       : raw.allowedRoots,
+    memoryDir: process.env.JUSTNEWMCP_MEMORY_DIR ?? raw.memoryDir,
     oauth: {
       ...rawOAuth,
       clientId: process.env.JUSTNEWMCP_CLIENT_ID ?? rawOAuth.clientId,

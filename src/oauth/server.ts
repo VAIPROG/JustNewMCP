@@ -43,10 +43,24 @@ export function extractClientIp(
     return normalizedPeer;
   }
 
-  const forwarded = req.headers.get("cf-connecting-ip") ?? req.headers.get("x-forwarded-for");
-  if (forwarded) {
-    const first = forwarded.split(",")[0]?.trim();
-    if (first) return normalizeIp(first);
+  const cfIp = req.headers.get("cf-connecting-ip")?.trim();
+  if (cfIp) {
+    return normalizeIp(cfIp);
+  }
+
+  const xff = req.headers.get("x-forwarded-for");
+  if (xff) {
+    const trustedSet = new Set(trustedProxies.map(normalizeIp));
+    const hops = xff
+      .split(",")
+      .map((part) => normalizeIp(part.trim()))
+      .filter(Boolean);
+    for (let i = hops.length - 1; i >= 0; i -= 1) {
+      const hop = hops[i];
+      if (hop && !trustedSet.has(hop)) {
+        return hop;
+      }
+    }
   }
   return normalizedPeer;
 }
