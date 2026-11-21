@@ -73,19 +73,33 @@ export function isAllowedRedirectUri(redirectUri: string, allowlist: string[]): 
     return false;
   }
 
+  if (parsed.hash !== "") {
+    return false;
+  }
   if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
     return false;
   }
-  if (parsed.protocol === "http:" && parsed.hostname !== "127.0.0.1" && parsed.hostname !== "localhost") {
+  const isLoopback = parsed.hostname === "127.0.0.1" || parsed.hostname === "localhost";
+  if (parsed.protocol === "http:" && !isLoopback) {
     return false;
   }
 
-  return allowlist.some((prefix) => {
+  return allowlist.some((entry) => {
     try {
-      const allowed = new URL(prefix);
+      const allowed = new URL(entry);
+      const allowedIsLoopback =
+        allowed.protocol === "http:" &&
+        (allowed.hostname === "127.0.0.1" || allowed.hostname === "localhost");
+
+      if (allowedIsLoopback && allowed.port === "") {
+        if (parsed.protocol !== "http:" || parsed.hostname !== allowed.hostname) return false;
+        if (allowed.pathname === "/" && allowed.search === "") return true;
+        return parsed.pathname === allowed.pathname && parsed.search === allowed.search;
+      }
+
       if (allowed.origin !== parsed.origin) return false;
-      if (allowed.pathname === "/" || allowed.pathname === "") return true;
-      return parsed.pathname.startsWith(allowed.pathname);
+      if (allowed.pathname === "/" && allowed.search === "") return true;
+      return parsed.pathname === allowed.pathname && parsed.search === allowed.search;
     } catch {
       return false;
     }

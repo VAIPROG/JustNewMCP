@@ -64,13 +64,20 @@ describe("workspace path boundaries, memory layout, and init", () => {
     rmSync(baseDir, { recursive: true, force: true });
   });
 
-  test("normalizes workspace paths into cross-platform slugs", () => {
-    expect(normalizeWorkspaceSlug("C:\\Users\\vaiprog\\SomeCoolProject")).toBe(
-      "C--Users--vaiprog--SomeCoolProject",
+  test("normalizes workspace paths into collision-resistant cross-platform slugs", () => {
+    expect(normalizeWorkspaceSlug("C:\\Users\\vaiprog\\SomeCoolProject")).toMatch(
+      /^c--users--vaiprog--somecoolproject--[0-9a-f]{8}$/,
     );
-    expect(normalizeWorkspaceSlug("D:/Work/My App/")).toBe("D--Work--My_App");
-    expect(normalizeWorkspaceSlug("/home/vaiprog/SomeCoolProject")).toBe(
-      "home--vaiprog--SomeCoolProject",
+    expect(normalizeWorkspaceSlug("/home/vaiprog/SomeCoolProject")).toMatch(
+      /^home--vaiprog--SomeCoolProject--[0-9a-f]{8}$/,
+    );
+    // Distinct paths that share a readable prefix must never collide
+    const slugSpace = normalizeWorkspaceSlug("/home/user/My App");
+    const slugUnderscore = normalizeWorkspaceSlug("/home/user/My_App");
+    expect(slugSpace).not.toBe(slugUnderscore);
+    // Case-insensitive Windows paths resolve to the same slug
+    expect(normalizeWorkspaceSlug("C:\\Users\\VAI\\App")).toBe(
+      normalizeWorkspaceSlug("c:\\users\\vai\\app"),
     );
   });
 

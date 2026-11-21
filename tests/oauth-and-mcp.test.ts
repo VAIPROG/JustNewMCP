@@ -8,6 +8,7 @@ import {
   type AppConfig,
 } from "../src/config.ts";
 import { createAppServer, type RunningServer } from "../src/index.ts";
+import { isAllowedRedirectUri } from "../src/oauth/server.ts";
 import { computePkceS256, generateRandomToken } from "../src/security/crypto.ts";
 import { readBodyWithinLimit } from "../src/security/headers.ts";
 
@@ -84,12 +85,20 @@ describe("OAuth 2.1 security hardening and MCP /mcp integration", () => {
     expect(asmJson.revocation_endpoint).toBe("https://mcp.example.com/oauth/revoke");
   });
 
-  test("blocks open redirect to untrusted redirect_uri", async () => {
+  test("blocks open redirect and enforces exact callback path and query matching", async () => {
     const challenge = computePkceS256(generateRandomToken(48));
     const res = await fetch(
       `${baseUrl}/oauth/authorize?response_type=code&client_id=${clientId}&redirect_uri=${encodeURIComponent("https://evil.example/steal")}&code_challenge=${challenge}&code_challenge_method=S256`,
     );
     expect(res.status).toBe(400);
+
+    const strictAllowlist = ["https://gemini.google.com/oauth/callback", "http://127.0.0.1"];
+    expect(isAllowedRedirectUri("https://gemini.google.com/oauth/callback", strictAllowlist)).toBe(true);
+    expect(isAllowedRedirectUri("https://gemini.google.com/oauth/callback.attacker", strictAllowlist)).toBe(false);
+    expect(isAllowedRedirectUri("https://gemini.google.com/oauth/callback/extra", strictAllowlist)).toBe(false);
+    expect(isAllowedRedirectUri("https://gemini.google.com/oauth/callback?next=evil", strictAllowlist)).toBe(false);
+    expect(isAllowedRedirectUri("https://gemini.google.com/oauth/callback#frag", strictAllowlist)).toBe(false);
+    expect(isAllowedRedirectUri("http://127.0.0.1:43210/cb", strictAllowlist)).toBe(true);
   });
 
   test("blocks authorize POST without matching CSRF session cookie and rejects oversized or multipart bodies", async () => {

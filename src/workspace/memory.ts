@@ -6,13 +6,18 @@ export const MEMORY_MAX_LINES = 200;
 export const MEMORY_MAX_BYTES = 25 * 1024;
 
 export function normalizeWorkspaceSlug(workspacePath: string): string {
-  const trimmed = workspacePath.trim().replace(/^[/\\]+|[/\\]+$/g, "");
-  const normalized = trimmed
+  const trimmed = workspacePath.trim().replace(/[/\\]+$/, "");
+  const isWindowsPath = /^[A-Za-z]:[/\\]/.test(trimmed);
+  const hashInput = isWindowsPath ? trimmed.replaceAll("\\", "/").toLowerCase() : trimmed;
+  const shortHash = new Bun.CryptoHasher("sha256").update(hashInput, "utf8").digest("hex").slice(0, 8);
+
+  const readable = (isWindowsPath ? trimmed.toLowerCase() : trimmed)
+    .replace(/^[/\\]+/, "")
     .replace(/^([A-Za-z]):[/\\]+/, "$1--")
     .replace(/[/\\]+/g, "--")
     .replace(/[<>:"|?*\x00-\x1f\s]+/g, "_")
     .replace(/\.\.+/g, "_");
-  return normalized || "workspace";
+  return `${readable || "workspace"}--${shortHash}`;
 }
 
 export function resolveMemoryDirectory(
