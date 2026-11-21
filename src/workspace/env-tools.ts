@@ -171,11 +171,13 @@ export function parseEnvEntries(text: string): ParsedEnvEntry[] {
 function formatEnvValue(value: string): string {
   const withEscapedDollar = value.replaceAll("$", "\\$");
   if (/[\r\n]/.test(withEscapedDollar)) {
-    const escaped = withEscapedDollar
-      .replaceAll('"', '\\"')
-      .replaceAll("\r", "\\r")
-      .replaceAll("\n", "\\n");
-    return `"${escaped}"`;
+    if (!withEscapedDollar.includes("\"")) {
+      return `"${withEscapedDollar.replaceAll("\r", "\\r").replaceAll("\n", "\\n")}"`;
+    }
+    if (!withEscapedDollar.includes("`")) {
+      return `\`${withEscapedDollar}\``;
+    }
+    throw new Error("Value containing both newlines, double quotes, and backticks cannot be safely serialized in dotenv.");
   }
   if (!/[\s#"'`$]/.test(value)) {
     return withEscapedDollar;
@@ -183,7 +185,13 @@ function formatEnvValue(value: string): string {
   if (!withEscapedDollar.includes("'")) {
     return `'${withEscapedDollar}'`;
   }
-  return `"${withEscapedDollar.replaceAll('"', '\\"')}"`;
+  if (!withEscapedDollar.includes('"')) {
+    return `"${withEscapedDollar}"`;
+  }
+  if (!withEscapedDollar.includes("`")) {
+    return `\`${withEscapedDollar}\``;
+  }
+  throw new Error("Value containing single quotes, double quotes, and backticks simultaneously cannot be safely serialized in dotenv.");
 }
 
 export async function readAvailableEnvsTool(

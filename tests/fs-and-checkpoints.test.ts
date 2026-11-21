@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -126,6 +126,14 @@ describe("filesystem tools and local checkpoints", () => {
     const afterAdd = await readAvailableEnvsTool(workspaceDir, DEFAULT_DENIED_PATH_PATTERNS, ".env");
     expect(afterAdd.variables.map((v) => v.name)).toEqual(["API_KEY", "APP_PORT"]);
 
+    // Checkpoint directory and snapshot must have owner-only permissions on POSIX
+    if (process.platform !== "win32") {
+      const cpDir = join(workspaceDir, ".justnewmcp", "checkpoints", added.checkpointId);
+      expect(statSync(cpDir).mode & 0o777).toBe(0o700);
+      expect(statSync(join(cpDir, "snapshot.bin")).mode & 0o777).toBe(0o600);
+      expect(statSync(join(cpDir, "meta.json")).mode & 0o777).toBe(0o600);
+    }
+
     // Direct read_file of the checkpoint snapshot payload must be blocked
     await expect(
       readFileTool(workspaceDir, DEFAULT_DENIED_PATH_PATTERNS, tracker, {
@@ -171,6 +179,25 @@ describe("filesystem tools and local checkpoints", () => {
     const loaded = JSON.parse(envCheck.stdout.toString().trim()) as { w: string; d: string };
     expect(loaded.w).toBe("C:\\Users\\alice\\My App");
     expect(loaded.d).toBe("abc$HOME");
+
+    // Mixed single and double quotes must round-trip literally via backtick quoting
+    const mixedEdit = await setEnvVarTool(workspaceDir, DEFAULT_DENIED_PATH_PATTERNS, {
+      path: ".env",
+      key: "MIXED_QUOTES",
+      value: `both'and"quotes`,
+    });
+    const mixedCheck = Bun.spawnSync(
+      [
+        process.execPath,
+        `--env-file=${join(workspaceDir, ".env")}`,
+        "-e",
+        "console.log(JSON.stringify(process.env.MIXED_QUOTES))",
+      ],
+      { stdout: "pipe", stderr: "pipe" },
+    );
+    expect(mixedCheck.exitCode).toBe(0);
+    expect(JSON.parse(mixedCheck.stdout.toString().trim())).toBe(`both'and"quotes`);
+    await rewindCheckpoint(workspaceDir, mixedEdit.checkpointId, DEFAULT_DENIED_PATH_PATTERNS);
 
     // Calling grep_files or glob_files rooted directly at .justnewmcp must still block checkpoint snapshots
     const metaDir = join(workspaceDir, ".justnewmcp");

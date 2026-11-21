@@ -1,4 +1,4 @@
-import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import { generateRandomToken } from "../security/crypto.ts";
 import { isEnvSecretPath, isPathInsideRoot, resolveWritablePathInsideRoot } from "./paths.ts";
@@ -38,7 +38,10 @@ function getCheckpointsRoot(workspaceRoot: string, create = false): string {
   assertNotSymlink(checkpointsRoot);
 
   if (create) {
-    mkdirSync(checkpointsRoot, { recursive: true });
+    mkdirSync(checkpointsRoot, { recursive: true, mode: 0o700 });
+    if (process.platform !== "win32") {
+      chmodSync(checkpointsRoot, 0o700);
+    }
   }
 
   if (existsSync(checkpointsRoot)) {
@@ -83,7 +86,10 @@ export async function createCheckpoint(
 
   const id = `cp_${Date.now().toString(36)}_${generateRandomToken(6)}`;
   const cpDir = join(checkpointsRoot, id);
-  mkdirSync(cpDir, { recursive: true });
+  mkdirSync(cpDir, { recursive: true, mode: 0o700 });
+  if (process.platform !== "win32") {
+    chmodSync(cpDir, 0o700);
+  }
 
   const existedBefore = existsSync(resolvedTargetPath);
   let sizeBytes = 0;
@@ -98,7 +104,11 @@ export async function createCheckpoint(
     }
     sizeBytes = stat.size;
     const bytes = await Bun.file(resolvedTargetPath).bytes();
-    await Bun.write(join(cpDir, "snapshot.bin"), bytes);
+    const snapshotPath = join(cpDir, "snapshot.bin");
+    writeFileSync(snapshotPath, bytes, { mode: 0o600 });
+    if (process.platform !== "win32") {
+      chmodSync(snapshotPath, 0o600);
+    }
   }
 
   const meta: CheckpointMeta = {
@@ -110,7 +120,11 @@ export async function createCheckpoint(
     sizeBytes,
   };
 
-  writeFileSync(join(cpDir, "meta.json"), JSON.stringify(meta, null, 2), "utf8");
+  const metaPath = join(cpDir, "meta.json");
+  writeFileSync(metaPath, JSON.stringify(meta, null, 2), { encoding: "utf8", mode: 0o600 });
+  if (process.platform !== "win32") {
+    chmodSync(metaPath, 0o600);
+  }
   pruneOldCheckpoints(checkpointsRoot);
   return meta;
 }
