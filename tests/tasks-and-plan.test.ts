@@ -212,6 +212,7 @@ test("authenticated /mcp calls manage tasks and enforce read-only plan mode", as
       ["write_file", { path: file, content: "after" }],
       ["set_env_var", { key: "FLAG", value: "after" }],
       ["checkpoint_rewind", { checkpoint_id: checkpointId }],
+      ["run_allowed_cmd", { command: "git", args: ["status"] }],
     ] as const;
 
     expect(JSON.stringify(await result("read_file", { path: file }))).toContain("before");

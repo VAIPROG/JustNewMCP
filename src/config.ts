@@ -36,6 +36,22 @@ export const OAuthConfigSchema = z.object({
   rateLimit: RateLimitSchema.default({}),
 });
 
+export const AllowedCommandRuleSchema = z.object({
+  command: z
+    .string()
+    .min(1)
+    .refine((c) => !c.includes("/") && !c.includes("\\"), {
+      message: "Command must be a bare executable name without path separators.",
+    }),
+  allowedSubcommands: z.array(z.string().min(1)).optional(),
+  allowedArgs: z.array(z.string().min(1)).optional(),
+  deniedArgs: z.array(z.string().min(1)).default([]),
+  timeoutMs: z.number().int().min(100).max(600_000).default(30_000),
+  maxOutputChars: z.number().int().min(1024).max(150_000).default(30_000),
+});
+
+export type AllowedCommandRule = z.infer<typeof AllowedCommandRuleSchema>;
+
 export const ConfigSchema = z.object({
   host: z.string().default("127.0.0.1"),
   port: z.number().int().min(0).max(65535).default(8787),
@@ -46,6 +62,7 @@ export const ConfigSchema = z.object({
   deniedPathPatterns: z.array(z.string().min(1)).default(DEFAULT_DENIED_PATH_PATTERNS),
   allowEnvReading: z.boolean().default(false),
   askHumanAllowance: z.boolean().default(false),
+  allowedCommands: z.array(AllowedCommandRuleSchema).default([]),
   maxMcpBodyBytes: z.number().int().min(1024).default(1_048_576),
   oauth: OAuthConfigSchema,
 });

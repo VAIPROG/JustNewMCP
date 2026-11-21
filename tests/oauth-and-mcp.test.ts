@@ -37,6 +37,7 @@ describe("OAuth 2.1 security hardening and MCP /mcp integration", () => {
       deniedPathPatterns: DEFAULT_DENIED_PATH_PATTERNS,
       allowEnvReading: false,
       askHumanAllowance: false,
+      allowedCommands: [],
       maxMcpBodyBytes: 4096,
       oauth: {
         clientId,
@@ -161,6 +162,7 @@ describe("OAuth 2.1 security hardening and MCP /mcp integration", () => {
       deniedPathPatterns: DEFAULT_DENIED_PATH_PATTERNS,
       allowEnvReading: false,
       askHumanAllowance: false,
+      allowedCommands: [],
       maxMcpBodyBytes: 4096,
       oauth: {
         clientId,

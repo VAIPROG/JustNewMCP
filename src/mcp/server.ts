@@ -3,6 +3,7 @@ import type { AppConfig } from "../config.ts";
 import { AuditLogger } from "../security/audit.ts";
 import { readBodyWithinLimit } from "../security/headers.ts";
 import { listCheckpoints, rewindCheckpoint } from "../workspace/checkpoints.ts";
+import { runAllowedCmdTool } from "../workspace/cmd-runner.ts";
 import { readAvailableEnvsTool, setEnvVarTool } from "../workspace/env-tools.ts";
 import {
   applyEditsTool,
@@ -90,6 +91,12 @@ const CheckpointRewindArgs = z.object({
   checkpoint_id: z.string().min(8).max(64),
 });
 
+const RunAllowedCmdArgs = z.object({
+  command: z.string().min(1).max(128),
+  args: z.array(z.string().max(4096)).max(100).optional(),
+  timeout_ms: z.number().int().min(100).max(600_000).optional(),
+});
+
 const TaskIdArgs = z.object({ id: z.string().min(1) });
 const TaskCreateArgs = z.object({
   title: z.string().trim().min(1).max(TASK_FIELD_LIMITS.title),
@@ -120,6 +127,7 @@ const PLAN_BLOCKED_TOOLS = new Set([
   "write_file",
   "set_env_var",
   "checkpoint_rewind",
+  "run_allowed_cmd",
 ]);
 
 const TOOL_DEFINITIONS = [
@@ -281,6 +289,20 @@ const TOOL_DEFINITIONS = [
         checkpoint_id: { type: "string" },
       },
       required: ["checkpoint_id"],
+    },
+  },
+  {
+    name: "run_allowed_cmd",
+    description:
+      "Run an allowlisted executable directly via argv array without a shell, spilling outputs over maxOutputChars to .justnewmcp/logs/.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        command: { type: "string" },
+        args: { type: "array", items: { type: "string" } },
+        timeout_ms: { type: "integer", minimum: 100, maximum: 600000 },
+      },
+      required: ["command"],
     },
   },
   {
@@ -598,6 +620,16 @@ export class McpRouter {
       const root = this.requireActiveWorkspace();
       const parsed = CheckpointRewindArgs.parse(args);
       return rewindCheckpoint(root, parsed.checkpoint_id, this.config.deniedPathPatterns);
+    }
+
+    if (name === "run_allowed_cmd") {
+      const root = this.requireActiveWorkspace();
+      const parsed = RunAllowedCmdArgs.parse(args);
+      return runAllowedCmdTool(root, this.config.allowedCommands, {
+        command: parsed.command,
+        args: parsed.args,
+        timeoutMs: parsed.timeout_ms,
+      });
     }
 
     return null;
