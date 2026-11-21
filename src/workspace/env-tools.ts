@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, statSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, statSync, writeFileSync } from "node:fs";
 import { dirname, relative, resolve } from "node:path";
 import { createCheckpoint } from "./checkpoints.ts";
 import { isEnvSecretPath, isSafeEnvTemplatePath, resolveInsideRoots, resolveWritablePathInsideRoot } from "./paths.ts";
@@ -170,6 +170,10 @@ export function parseEnvEntries(text: string): ParsedEnvEntry[] {
 
 function formatEnvValue(value: string): string {
   const withEscapedDollar = value.replaceAll("$", "\\$");
+  const needsQuoting = /[\r\n\s#"'`$]/.test(value);
+  if (needsQuoting && withEscapedDollar.endsWith("\\")) {
+    throw new Error("Quoted dotenv values ending with a backslash cannot be safely serialized.");
+  }
   if (/[\r\n]/.test(withEscapedDollar)) {
     if (!withEscapedDollar.includes("\"")) {
       return `"${withEscapedDollar.replaceAll("\r", "\\r").replaceAll("\n", "\\n")}"`;
@@ -302,8 +306,14 @@ export async function setEnvVarTool(
     }
   }
 
+  const existedBefore = existsSync(targetPath);
   const cp = await createCheckpoint(workspaceRoot, targetPath, `set_env_var:${opts.key}`);
-  await Bun.write(targetPath, updatedText);
+  if (!existedBefore && isEnvSecretPath(targetPath) && process.platform !== "win32") {
+    writeFileSync(targetPath, updatedText, { encoding: "utf8", mode: 0o600 });
+    chmodSync(targetPath, 0o600);
+  } else {
+    await Bun.write(targetPath, updatedText);
+  }
 
   return {
     path: relative(workspaceRoot, targetPath).replaceAll("\\", "/"),

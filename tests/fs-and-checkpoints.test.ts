@@ -199,6 +199,26 @@ describe("filesystem tools and local checkpoints", () => {
     expect(JSON.parse(mixedCheck.stdout.toString().trim())).toBe(`both'and"quotes`);
     await rewindCheckpoint(workspaceDir, mixedEdit.checkpointId, DEFAULT_DENIED_PATH_PATTERNS);
 
+    // Quoted value ending in backslash must be rejected explicitly
+    await expect(
+      setEnvVarTool(workspaceDir, DEFAULT_DENIED_PATH_PATTERNS, {
+        path: ".env",
+        key: "BAD_TRAIL",
+        value: "ends with \\",
+      }),
+    ).rejects.toThrow("ending with a backslash");
+
+    // Newly created secret .env file must be mode 0600 on POSIX
+    const freshEnv = await setEnvVarTool(workspaceDir, DEFAULT_DENIED_PATH_PATTERNS, {
+      path: ".env.fresh",
+      key: "TOKEN",
+      value: "abc",
+    });
+    if (process.platform !== "win32") {
+      expect(statSync(join(workspaceDir, ".env.fresh")).mode & 0o777).toBe(0o600);
+    }
+    await rewindCheckpoint(workspaceDir, freshEnv.checkpointId, DEFAULT_DENIED_PATH_PATTERNS);
+
     // Calling grep_files or glob_files rooted directly at .justnewmcp must still block checkpoint snapshots
     const metaDir = join(workspaceDir, ".justnewmcp");
     const grepFromMeta = await grepFilesTool(metaDir, DEFAULT_DENIED_PATH_PATTERNS, {

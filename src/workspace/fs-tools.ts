@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, statSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import { createCheckpoint } from "./checkpoints.ts";
 import { INTERNAL_PROTECTED_PATTERNS, isEnvSecretPath, isPathDenied, resolveInsideRoots, resolveWritablePathInsideRoot } from "./paths.ts";
@@ -234,8 +234,16 @@ export async function writeFileTool(
   const targetPath = resolveWritablePathInsideRoot(inputPath, workspaceRoot, effectiveWriteDenied);
   mkdirSync(dirname(targetPath), { recursive: true });
 
+  const existedBefore = existsSync(targetPath);
   const cp = await createCheckpoint(workspaceRoot, targetPath, "write_file");
-  const bytesWritten = await Bun.write(targetPath, content);
+  let bytesWritten: number;
+  if (!existedBefore && isEnvSecretPath(targetPath) && process.platform !== "win32") {
+    writeFileSync(targetPath, content, { encoding: "utf8", mode: 0o600 });
+    chmodSync(targetPath, 0o600);
+    bytesWritten = Buffer.byteLength(content, "utf8");
+  } else {
+    bytesWritten = await Bun.write(targetPath, content);
+  }
   readTracker.add(targetPath);
 
   return {
