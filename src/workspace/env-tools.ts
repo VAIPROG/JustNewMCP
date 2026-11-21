@@ -189,11 +189,11 @@ function formatEnvValue(value: string): string {
   if (!withEscapedDollar.includes("'")) {
     return `'${withEscapedDollar}'`;
   }
-  if (!withEscapedDollar.includes('"')) {
-    return `"${withEscapedDollar}"`;
-  }
   if (!withEscapedDollar.includes("`")) {
     return `\`${withEscapedDollar}\``;
+  }
+  if (!withEscapedDollar.includes('"') && !/\\[rn]/.test(withEscapedDollar)) {
+    return `"${withEscapedDollar}"`;
   }
   throw new Error("Value containing single quotes, double quotes, and backticks simultaneously cannot be safely serialized in dotenv.");
 }

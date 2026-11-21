@@ -217,6 +217,31 @@ describe("filesystem tools and local checkpoints", () => {
     if (process.platform !== "win32") {
       expect(statSync(join(workspaceDir, ".env.fresh")).mode & 0o777).toBe(0o600);
     }
+    // Apostrophe + literal \new must round-trip without decoding \n into a newline
+    const slashN = await setEnvVarTool(workspaceDir, DEFAULT_DENIED_PATH_PATTERNS, {
+      path: ".env.fresh",
+      key: "WIN_QUOTE_N",
+      value: "C:\\o'reilly\\new",
+    });
+    const slashNCheck = Bun.spawnSync(
+      [
+        process.execPath,
+        `--env-file=${join(workspaceDir, ".env.fresh")}`,
+        "-e",
+        "console.log(JSON.stringify(process.env.WIN_QUOTE_N))",
+      ],
+      { stdout: "pipe", stderr: "pipe" },
+    );
+    expect(slashNCheck.exitCode).toBe(0);
+    expect(JSON.parse(slashNCheck.stdout.toString().trim())).toBe("C:\\o'reilly\\new");
+
+    // Deleting .env.fresh and rewinding slashN must recreate it with mode 0600 on POSIX
+    rmSync(join(workspaceDir, ".env.fresh"), { force: true });
+    await rewindCheckpoint(workspaceDir, slashN.checkpointId, DEFAULT_DENIED_PATH_PATTERNS);
+    if (process.platform !== "win32") {
+      expect(statSync(join(workspaceDir, ".env.fresh")).mode & 0o777).toBe(0o600);
+    }
+
     await rewindCheckpoint(workspaceDir, freshEnv.checkpointId, DEFAULT_DENIED_PATH_PATTERNS);
 
     // Calling grep_files or glob_files rooted directly at .justnewmcp must still block checkpoint snapshots

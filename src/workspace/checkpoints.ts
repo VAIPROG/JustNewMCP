@@ -190,7 +190,13 @@ export async function rewindCheckpoint(
   }
 
   mkdirSync(dirname(targetPath), { recursive: true });
+  const existedBeforeRewind = existsSync(targetPath);
   const bytes = await Bun.file(snapshotPath).bytes();
-  await Bun.write(targetPath, bytes);
+  if (!existedBeforeRewind && isEnvSecretPath(targetPath) && process.platform !== "win32") {
+    writeFileSync(targetPath, bytes, { mode: 0o600 });
+    chmodSync(targetPath, 0o600);
+  } else {
+    await Bun.write(targetPath, bytes);
+  }
   return { checkpointId, relativePath: meta.relativePath, action: "restored" };
 }
