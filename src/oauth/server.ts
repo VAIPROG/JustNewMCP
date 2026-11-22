@@ -165,7 +165,13 @@ export class OAuthServer {
         config.allowedRoots,
         serverIdentity,
       );
-      const loaded = this.tokenStore.load();
+      let loaded: ReturnType<HashedTokenStore["load"]>;
+      try {
+        loaded = this.tokenStore.load();
+      } catch (err) {
+        this.tokenStore.close();
+        throw err;
+      }
       for (const [hash, record] of loaded.accessTokens) {
         this.accessTokens.set(hash, record);
       }

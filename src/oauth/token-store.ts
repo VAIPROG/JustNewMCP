@@ -151,9 +151,12 @@ export class HashedTokenStore {
             fchmodSync(fd, 0o600);
           }
           writeFileSync(fd, payload, "utf8");
-        } finally {
+        } catch (writeErr) {
           closeSync(fd);
+          rmSync(this.lockPath, { force: true });
+          throw writeErr;
         }
+        closeSync(fd);
         this.lockHeld = true;
         return;
       } catch (err) {
