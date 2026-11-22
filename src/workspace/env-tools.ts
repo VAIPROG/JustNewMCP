@@ -1,7 +1,10 @@
 import {
-  chmodSync,
+  closeSync,
+  constants,
   existsSync,
+  fchmodSync,
   mkdirSync,
+  openSync,
   statSync,
   writeFileSync,
 } from "node:fs";
@@ -367,8 +370,20 @@ export async function setEnvVarTool(
     isEnvSecretPath(targetPath) &&
     process.platform !== "win32"
   ) {
-    writeFileSync(targetPath, updatedText, { encoding: "utf8", mode: 0o600 });
-    chmodSync(targetPath, 0o600);
+    const fd = openSync(
+      targetPath,
+      constants.O_WRONLY |
+        constants.O_CREAT |
+        constants.O_EXCL |
+        constants.O_NOFOLLOW,
+      0o600,
+    );
+    try {
+      fchmodSync(fd, 0o600);
+      writeFileSync(fd, updatedText, "utf8");
+    } finally {
+      closeSync(fd);
+    }
   } else {
     await Bun.write(targetPath, updatedText);
   }

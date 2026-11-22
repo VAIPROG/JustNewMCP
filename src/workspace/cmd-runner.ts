@@ -1,6 +1,5 @@
 import {
   chmodSync,
-  existsSync,
   lstatSync,
   mkdirSync,
   realpathSync,

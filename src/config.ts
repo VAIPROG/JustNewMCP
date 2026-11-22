@@ -36,7 +36,7 @@ export const OAuthConfigSchema = z.object({
   accessTokenTtlSec: z.number().int().min(60).default(3600),
   refreshTokenTtlSec: z.number().int().min(300).default(604_800),
   authCodeTtlSec: z.number().int().min(30).default(300),
-  rateLimit: RateLimitSchema.default({}),
+  rateLimit: RateLimitSchema.prefault({}),
 });
 
 export const AllowedCommandRuleSchema = z.object({
