@@ -9,6 +9,7 @@ export type AuditEventType =
   | "mcp.cmd.background_started"
   | "mcp.cmd.background_stopped"
   | "mcp.shell.called"
+  | "mcp.tools.activated"
   | "mcp.plan.entered"
   | "mcp.plan.exited"
   | "mcp.tool.called"

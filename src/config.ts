@@ -110,6 +110,7 @@ export const ConfigSchema = z.object({
   allowEnvReading: z.boolean().default(false),
   askHumanAllowance: z.boolean().default(false),
   allowShell: z.boolean().optional(),
+  deferredTools: z.boolean().optional(),
   shellTimeoutMs: z.number().int().min(100).max(600_000).optional(),
   shellMaxOutputChars: z.number().int().min(1024).max(150_000).optional(),
   allowedCommands: z.array(AllowedCommandRuleSchema).default([]),
@@ -162,6 +163,10 @@ export function loadConfig(configPath?: string): AppConfig {
       process.env.JUSTNEWMCP_ALLOW_SHELL !== undefined
         ? process.env.JUSTNEWMCP_ALLOW_SHELL === "true"
         : raw.allowShell,
+    deferredTools:
+      process.env.JUSTNEWMCP_DEFERRED_TOOLS !== undefined
+        ? process.env.JUSTNEWMCP_DEFERRED_TOOLS === "true"
+        : raw.deferredTools,
     oauth: {
       ...rawOAuth,
       clientId: process.env.JUSTNEWMCP_CLIENT_ID ?? rawOAuth.clientId,

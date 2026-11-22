@@ -1,6 +1,7 @@
 import { z } from "zod";
 import type { AppConfig } from "../config.ts";
 import { AuditLogger } from "../security/audit.ts";
+import { ToolRegistry } from "./tool-registry.ts";
 import { readBodyWithinLimit } from "../security/headers.ts";
 import { BackgroundJobManager } from "../workspace/background-jobs.ts";
 import { listCheckpoints, rewindCheckpoint } from "../workspace/checkpoints.ts";
@@ -178,6 +179,12 @@ const WorktreeExitArgs = z.object({
 const RunShellArgs = z.object({
   command: z.string().min(1).max(32_768),
   timeout_ms: z.number().int().min(100).max(600_000).optional(),
+});
+
+const ToolSearchArgs = z.object({
+  query: z.string().max(500).optional(),
+  module: z.string().max(64).optional(),
+  limit: z.number().int().min(1).max(30).optional(),
 });
 
 const TASK_PROPERTIES = {
@@ -677,6 +684,7 @@ export class McpRouter {
   private readonly backgroundJobs = new BackgroundJobManager();
   private readonly plan = new PlanMode();
   private readonly lsp: LspManager;
+  private readonly toolRegistry: ToolRegistry;
   private workspaceChanging = false;
   private workspaceRevision = 0;
   private activeWorkspaceMutations = 0;
@@ -686,6 +694,13 @@ export class McpRouter {
     private readonly audit: AuditLogger = new AuditLogger(),
   ) {
     this.lsp = new LspManager(config.lspServers, config.deniedPathPatterns);
+    const eligibleTools = config.allowShell
+      ? [...TOOL_DEFINITIONS, RUN_SHELL_TOOL_DEFINITION]
+      : TOOL_DEFINITIONS;
+    this.toolRegistry = new ToolRegistry(
+      eligibleTools,
+      config.deferredTools === true,
+    );
   }
 
   async stopAllBackgroundJobs(): Promise<void> {
@@ -784,19 +799,29 @@ export class McpRouter {
     }
 
     const id = payload.id ?? null;
+    const sessionHeader = req.headers.get("mcp-session-id")?.trim();
+    const sessionKey = sessionHeader
+      ? `session:${clientId}:${sessionHeader}`
+      : `client:${clientId}`;
 
     if (payload.method === "initialize") {
-      return Response.json({
-        jsonrpc: "2.0",
-        id,
-        result: {
-          protocolVersion: "2025-03-26",
-          capabilities: { tools: {} },
-          serverInfo: { name: "JustNewMCP", version: "0.2.0" },
-          instructions:
-            "Call workspace_init first to select a project inside the allowed roots before reading or modifying files.",
+      const sessionId = crypto.randomUUID();
+      return Response.json(
+        {
+          jsonrpc: "2.0",
+          id,
+          result: {
+            protocolVersion: "2025-03-26",
+            capabilities: {
+              tools: { listChanged: this.config.deferredTools === true },
+            },
+            serverInfo: { name: "JustNewMCP", version: "0.2.0" },
+            instructions:
+              "Call workspace_init first to select a project inside the allowed roots before reading or modifying files.",
+          },
         },
-      });
+        { headers: { "Mcp-Session-Id": sessionId } },
+      );
     }
 
     if (payload.method === "notifications/initialized") {
@@ -808,13 +833,10 @@ export class McpRouter {
     }
 
     if (payload.method === "tools/list") {
-      const tools = this.config.allowShell
-        ? [...TOOL_DEFINITIONS, RUN_SHELL_TOOL_DEFINITION]
-        : TOOL_DEFINITIONS;
       return Response.json({
         jsonrpc: "2.0",
         id,
-        result: { tools },
+        result: { tools: this.toolRegistry.listVisibleTools(sessionKey) },
       });
     }
 
@@ -825,6 +847,19 @@ export class McpRouter {
       let mutationStarted = false;
 
       try {
+        if (name === "run_shell" && this.config.allowShell !== true) {
+          throw new Error(
+            "run_shell is disabled. Set allowShell: true in config to enable.",
+          );
+        }
+        if (
+          !this.toolRegistry.isToolActive(name, sessionKey) &&
+          this.toolRegistry.isKnownDeferredTool(name)
+        ) {
+          throw new Error(
+            `Tool "${name}" is deferred and not yet active. Call tool_search to discover and activate it first.`,
+          );
+        }
         if (changesWorkspace) {
           if (this.plan.active) {
             throw new Error(
@@ -834,7 +869,13 @@ export class McpRouter {
           this.activeWorkspaceMutations++;
           mutationStarted = true;
         }
-        const result = await this.dispatchTool(name, args, ip, clientId);
+        const result = await this.dispatchTool(
+          name,
+          args,
+          ip,
+          clientId,
+          sessionKey,
+        );
         if (result === null) {
           return Response.json({
             jsonrpc: "2.0",
@@ -843,13 +884,37 @@ export class McpRouter {
           });
         }
         this.audit.record("mcp.tool.called", ip, { clientId, detail: name });
-        return Response.json({
+        const rpcResponse = {
           jsonrpc: "2.0",
           id,
           result: {
             content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
           },
-        });
+        };
+        const listChanged =
+          name === "tool_search" &&
+          typeof result === "object" &&
+          result !== null &&
+          "newlyActivated" in result &&
+          Array.isArray(
+            (result as { newlyActivated?: unknown }).newlyActivated,
+          ) &&
+          (result as { newlyActivated: unknown[] }).newlyActivated.length > 0;
+        const acceptsSse = (req.headers.get("accept") ?? "")
+          .toLowerCase()
+          .includes("text/event-stream");
+        if (listChanged && acceptsSse) {
+          const notification = JSON.stringify({
+            jsonrpc: "2.0",
+            method: "notifications/tools/list_changed",
+          });
+          const sseBody = `event: message\ndata: ${notification}\n\nevent: message\ndata: ${JSON.stringify(rpcResponse)}\n\n`;
+          return new Response(sseBody, {
+            status: 200,
+            headers: { "Content-Type": "text/event-stream; charset=utf-8" },
+          });
+        }
+        return Response.json(rpcResponse);
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         this.audit.record("mcp.tool.denied", ip, {
@@ -881,7 +946,20 @@ export class McpRouter {
     args: Record<string, unknown>,
     ip: string,
     clientId: string,
+    sessionKey: string,
   ): Promise<unknown | null> {
+    if (name === "tool_search") {
+      const parsed = ToolSearchArgs.parse(args);
+      const result = this.toolRegistry.search(parsed, sessionKey);
+      if (result.newlyActivated.length > 0) {
+        this.audit.record("mcp.tools.activated", ip, {
+          clientId,
+          detail: result.newlyActivated.join(","),
+        });
+      }
+      return result;
+    }
+
     if (name === "task_create") {
       return this.tasks.create(TaskCreateArgs.parse(args));
     }
