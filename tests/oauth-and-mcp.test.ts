@@ -375,7 +375,7 @@ describe("OAuth 2.1 security hardening and MCP /mcp integration", () => {
     expect(getAuth.status).toBe(200);
     const csp = getAuth.headers.get("content-security-policy") ?? "";
     expect(csp).toContain("frame-ancestors 'none'");
-    expect(csp).toContain("form-action 'self' https://gemini.google.com");
+    expect(csp).not.toContain("form-action");
 
     const setCookie = getAuth.headers.get("set-cookie") ?? "";
     const cookieMatch = setCookie.match(/justnewmcp_csrf_sid=([^;]+)/);
