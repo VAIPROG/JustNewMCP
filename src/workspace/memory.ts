@@ -1,15 +1,37 @@
-import { existsSync, readdirSync, realpathSync, statSync } from "node:fs";
-import { join, resolve } from "node:path";
-import { resolveInsideRoots } from "./paths.ts";
+import {
+  chmodSync,
+  closeSync,
+  constants as fsConstants,
+  existsSync,
+  fchmodSync,
+  lstatSync,
+  mkdirSync,
+  openSync,
+  readdirSync,
+  realpathSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
+import path, { join, relative, resolve } from "node:path";
+import { isPathInsideRoot, resolveInsideRoots } from "./paths.ts";
 
 export const MEMORY_MAX_LINES = 200;
 export const MEMORY_MAX_BYTES = 25 * 1024;
+export const MAX_MEMORY_FILE_BYTES = 256 * 1024;
+const MAX_MEMORY_SEARCH_CHARS = 30_000;
+
+const utf8FatalDecoder = new TextDecoder("utf-8", { fatal: true });
 
 export function normalizeWorkspaceSlug(workspacePath: string): string {
   const trimmed = workspacePath.trim().replace(/[/\\]+$/, "");
   const isWindowsPath = /^[A-Za-z]:[/\\]/.test(trimmed);
-  const hashInput = isWindowsPath ? trimmed.replaceAll("\\", "/").toLowerCase() : trimmed;
-  const shortHash = new Bun.CryptoHasher("sha256").update(hashInput, "utf8").digest("hex").slice(0, 8);
+  const hashInput = isWindowsPath
+    ? trimmed.replaceAll("\\", "/").toLowerCase()
+    : trimmed;
+  const shortHash = new Bun.CryptoHasher("sha256")
+    .update(hashInput, "utf8")
+    .digest("hex")
+    .slice(0, 8);
 
   const readable = (isWindowsPath ? trimmed.toLowerCase() : trimmed)
     .replace(/^[/\\]+/, "")
@@ -38,7 +60,105 @@ export function resolveMemoryDirectory(
   };
 }
 
-export function listMemoryTopics(memoryDir: string, boundaryRoot: string): string[] {
+function assertNotSymlink(targetPath: string): void {
+  try {
+    if (lstatSync(targetPath).isSymbolicLink()) {
+      throw new Error(`Memory path "${targetPath}" must not be a symlink.`);
+    }
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
+      throw err;
+    }
+  }
+}
+
+function ensureMemoryDirSafe(
+  workspaceDir: string,
+  memoryRoot: string | undefined,
+  create: boolean,
+): { memoryDir: string; boundaryRoot: string } {
+  if (memoryRoot && create && !existsSync(resolve(memoryRoot))) {
+    mkdirSync(resolve(memoryRoot), { recursive: true, mode: 0o700 });
+    if (process.platform !== "win32") {
+      chmodSync(resolve(memoryRoot), 0o700);
+    }
+  }
+  const { memoryDir, boundaryRoot } = resolveMemoryDirectory(workspaceDir, memoryRoot);
+  const realBoundary = realpathSync(resolve(boundaryRoot));
+
+  if (!memoryRoot) {
+    assertNotSymlink(join(realBoundary, ".justnewmcp"));
+  }
+  assertNotSymlink(memoryDir);
+
+  if (create) {
+    mkdirSync(memoryDir, { recursive: true, mode: 0o700 });
+    if (process.platform !== "win32") {
+      chmodSync(memoryDir, 0o700);
+    }
+  }
+
+  if (existsSync(memoryDir)) {
+    const realMem = realpathSync(memoryDir);
+    if (!isPathInsideRoot(realMem, realBoundary)) {
+      throw new Error("Memory directory resolves outside its allowed boundary.");
+    }
+    return { memoryDir: realMem, boundaryRoot: realBoundary };
+  }
+
+  return { memoryDir, boundaryRoot: realBoundary };
+}
+
+function validateRelativeMemorySubpath(inputPath: string): string[] {
+  const trimmed = inputPath.trim();
+  if (!trimmed || path.isAbsolute(trimmed) || /^[A-Za-z]:/.test(trimmed)) {
+    throw new Error(`Memory path "${inputPath}" must be a relative path inside the project memory directory.`);
+  }
+  if (trimmed.includes("\0")) {
+    throw new Error("Memory path must not contain NUL bytes.");
+  }
+  const segments = trimmed.replaceAll("\\", "/").split("/").filter(Boolean);
+  if (segments.length === 0 || segments.some((s) => s === "." || s === "..")) {
+    throw new Error(`Memory path "${inputPath}" contains disallowed traversal segments.`);
+  }
+  return segments;
+}
+
+function ensureNestedDirsNoSymlinks(baseDir: string, dirSegments: string[]): string {
+  let current = baseDir;
+  for (const segment of dirSegments) {
+    current = join(current, segment);
+    assertNotSymlink(current);
+    if (!existsSync(current)) {
+      mkdirSync(current, { mode: 0o700 });
+      if (process.platform !== "win32") {
+        chmodSync(current, 0o700);
+      }
+    } else if (!statSync(current).isDirectory()) {
+      throw new Error(`Memory path segment "${segment}" is not a directory.`);
+    }
+  }
+  return current;
+}
+
+function decodeUtf8Strict(bytes: Uint8Array): string {
+  const sampleLen = Math.min(bytes.byteLength, 8192);
+  for (let i = 0; i < sampleLen; i += 1) {
+    if (bytes[i] === 0) {
+      throw new Error("Memory file appears to be binary.");
+    }
+  }
+  try {
+    return utf8FatalDecoder.decode(bytes);
+  } catch {
+    throw new Error("Memory file is not valid UTF-8.");
+  }
+}
+
+export function listMemoryTopics(
+  memoryDir: string,
+  boundaryRoot: string,
+): string[] {
   if (!existsSync(memoryDir)) return [];
   let realMemDir: string;
   try {
@@ -60,7 +180,10 @@ export async function readMemoryPreview(
   workspaceDir: string,
   options: { memoryRoot?: string; deniedPatterns?: string[] } = {},
 ): Promise<{ memoryDir: string; preview: string | null; topics: string[] }> {
-  const { memoryDir, boundaryRoot } = resolveMemoryDirectory(workspaceDir, options.memoryRoot);
+  const { memoryDir, boundaryRoot } = resolveMemoryDirectory(
+    workspaceDir,
+    options.memoryRoot,
+  );
   const memoryPath = join(memoryDir, "MEMORY.md");
   const topics = listMemoryTopics(memoryDir, boundaryRoot);
 
@@ -85,8 +208,200 @@ export async function readMemoryPreview(
     return { memoryDir, preview: null, topics };
   }
 
-  // Bounded disk read: never load more than MEMORY_MAX_BYTES into memory
-  const boundedText = await Bun.file(resolvedMemoryPath).slice(0, MEMORY_MAX_BYTES).text();
-  const preview = boundedText.split(/\r?\n/).slice(0, MEMORY_MAX_LINES).join("\n");
+  const boundedText = await Bun.file(resolvedMemoryPath)
+    .slice(0, MEMORY_MAX_BYTES)
+    .text();
+  const preview = boundedText
+    .split(/\r?\n/)
+    .slice(0, MEMORY_MAX_LINES)
+    .join("\n");
   return { memoryDir, preview, topics };
+}
+
+export async function memoryReadTool(
+  workspaceDir: string,
+  memoryRoot: string | undefined,
+  opts: { path?: string; offset?: number; limit?: number } = {},
+): Promise<{
+  memoryDir: string;
+  path: string;
+  startLine: number;
+  endLine: number;
+  totalLines: number;
+  hasMore: boolean;
+  content: string;
+}> {
+  const relPath = opts.path ?? "MEMORY.md";
+  const segments = validateRelativeMemorySubpath(relPath);
+  const { memoryDir } = ensureMemoryDirSafe(workspaceDir, memoryRoot, false);
+
+  const candidate = join(memoryDir, ...segments);
+  assertNotSymlink(candidate);
+  if (!existsSync(candidate)) {
+    throw new Error(`Memory file "${relPath}" not found.`);
+  }
+
+  const { resolvedPath } = resolveInsideRoots(candidate, [memoryDir]);
+  const stat = statSync(resolvedPath);
+  if (!stat.isFile()) {
+    throw new Error(`Memory path "${relPath}" is not a regular file.`);
+  }
+  if (stat.size > MAX_MEMORY_FILE_BYTES) {
+    throw new Error(`Memory file "${relPath}" exceeds ${MAX_MEMORY_FILE_BYTES} bytes.`);
+  }
+
+  const bytes = await Bun.file(resolvedPath).bytes();
+  const text = decodeUtf8Strict(bytes);
+  const allLines = text === "" ? [] : text.replace(/\r?\n$/, "").split(/\r?\n/);
+  const startLine = Math.max(1, opts.offset ?? 1);
+  const limit = Math.max(1, Math.min(opts.limit ?? 200, 2000));
+  const slice = allLines.slice(startLine - 1, startLine - 1 + limit);
+  const numbered = slice
+    .map((line, i) => `${String(startLine + i).padStart(4, " ")} | ${line}`)
+    .join("\n");
+
+  const endLine = slice.length > 0 ? startLine + slice.length - 1 : 0;
+  return {
+    memoryDir,
+    path: relative(memoryDir, resolvedPath).replaceAll("\\", "/"),
+    startLine,
+    endLine,
+    totalLines: allLines.length,
+    hasMore: startLine - 1 + slice.length < allLines.length,
+    content: numbered,
+  };
+}
+
+export async function memoryWriteTool(
+  workspaceDir: string,
+  memoryRoot: string | undefined,
+  opts: { path?: string; content: string; mode?: "overwrite" | "append" },
+): Promise<{
+  memoryDir: string;
+  path: string;
+  mode: "overwrite" | "append";
+  bytesWritten: number;
+}> {
+  const relPath = opts.path ?? "MEMORY.md";
+  const mode = opts.mode ?? "overwrite";
+  const segments = validateRelativeMemorySubpath(relPath);
+
+  const incomingBytes = Buffer.byteLength(opts.content, "utf8");
+  if (incomingBytes > MAX_MEMORY_FILE_BYTES) {
+    throw new Error(`Memory content exceeds ${MAX_MEMORY_FILE_BYTES} bytes.`);
+  }
+
+  const { memoryDir } = ensureMemoryDirSafe(workspaceDir, memoryRoot, true);
+  const parentDir = ensureNestedDirsNoSymlinks(memoryDir, segments.slice(0, -1));
+  const fileName = segments[segments.length - 1] ?? "MEMORY.md";
+  const targetPath = join(parentDir, fileName);
+
+  assertNotSymlink(targetPath);
+
+  let finalContent = opts.content;
+  if (mode === "append" && existsSync(targetPath)) {
+    const stat = statSync(targetPath);
+    if (!stat.isFile()) {
+      throw new Error(`Memory path "${relPath}" is not a regular file.`);
+    }
+    if (stat.size > MAX_MEMORY_FILE_BYTES) {
+      throw new Error(`Memory file "${relPath}" exceeds ${MAX_MEMORY_FILE_BYTES} bytes.`);
+    }
+    const existing = decodeUtf8Strict(await Bun.file(targetPath).bytes());
+    const needsNewline = existing.length > 0 && !existing.endsWith("\n");
+    finalContent = `${existing}${needsNewline ? "\n" : ""}${opts.content}`;
+    if (Buffer.byteLength(finalContent, "utf8") > MAX_MEMORY_FILE_BYTES) {
+      throw new Error(`Combined memory file would exceed ${MAX_MEMORY_FILE_BYTES} bytes.`);
+    }
+  }
+
+  // Open with O_NOFOLLOW (on POSIX) and fchmodSync on the open fd to avoid TOCTOU races
+  const noFollowFlag = process.platform !== "win32" && typeof fsConstants.O_NOFOLLOW === "number"
+    ? fsConstants.O_NOFOLLOW
+    : 0;
+  const flags =
+    fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_TRUNC | noFollowFlag;
+  const fd = openSync(targetPath, flags, 0o600);
+  try {
+    if (process.platform !== "win32") {
+      fchmodSync(fd, 0o600);
+    }
+    writeFileSync(fd, finalContent, "utf8");
+  } finally {
+    closeSync(fd);
+  }
+
+  const bytesWritten = Buffer.byteLength(finalContent, "utf8");
+  return {
+    memoryDir,
+    path: relative(memoryDir, targetPath).replaceAll("\\", "/"),
+    mode,
+    bytesWritten,
+  };
+}
+
+export async function memorySearchTool(
+  workspaceDir: string,
+  memoryRoot: string | undefined,
+  opts: { pattern: string; caseInsensitive?: boolean; maxMatches?: number },
+): Promise<{
+  memoryDir: string;
+  matches: string[];
+  truncated: boolean;
+}> {
+  const { memoryDir } = ensureMemoryDirSafe(workspaceDir, memoryRoot, false);
+  if (!existsSync(memoryDir)) {
+    return { memoryDir, matches: [], truncated: false };
+  }
+
+  const maxMatches = Math.max(1, Math.min(opts.maxMatches ?? 50, 200));
+  const re = new RegExp(opts.pattern, opts.caseInsensitive ? "i" : "");
+  const glob = new Bun.Glob("**/*");
+
+  const matches: string[] = [];
+  let charCount = 0;
+  let truncated = false;
+
+  for await (const rawRel of glob.scan({
+    cwd: memoryDir,
+    onlyFiles: true,
+    dot: false,
+    followSymlinks: false,
+  })) {
+    const relPosix = rawRel.replaceAll("\\", "/");
+    let resolvedPath: string;
+    try {
+      const fullPath = join(memoryDir, rawRel);
+      assertNotSymlink(fullPath);
+      resolvedPath = resolveInsideRoots(fullPath, [memoryDir]).resolvedPath;
+      const stat = statSync(resolvedPath);
+      if (!stat.isFile() || stat.size > MAX_MEMORY_FILE_BYTES) continue;
+    } catch {
+      continue;
+    }
+
+    let text: string;
+    try {
+      text = decodeUtf8Strict(await Bun.file(resolvedPath).bytes());
+    } catch {
+      continue;
+    }
+
+    const lines = text.split(/\r?\n/);
+    for (let i = 0; i < lines.length; i += 1) {
+      const line = lines[i] ?? "";
+      if (!re.test(line)) continue;
+      const entry = `${relPosix}:${i + 1}:${line}`;
+      if (charCount + entry.length > MAX_MEMORY_SEARCH_CHARS || matches.length >= maxMatches) {
+        truncated = true;
+        break;
+      }
+      matches.push(entry);
+      charCount += entry.length + 1;
+    }
+
+    if (truncated) break;
+  }
+
+  return { memoryDir, matches, truncated };
 }
