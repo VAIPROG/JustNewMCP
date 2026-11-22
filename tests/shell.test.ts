@@ -266,6 +266,24 @@ describe("opt-in local shell tool (run_shell)", () => {
             (e) => e.event === "mcp.shell.called" && e.clientId === clientId,
           ),
       ).toBe(true);
+
+      // Server shutdown must kill even SIGTERM-ignoring descendants holding stdout
+      if (process.platform !== "win32") {
+        const pidFile = join(workspaceDir, "shell-shutdown.pid");
+        const inflight = client.call("run_shell", {
+          command: `"${process.execPath}" -e 'const fs=require("node:fs"); process.on("SIGTERM",()=>{}); fs.writeFileSync(process.argv[1], String(process.pid)); setInterval(()=>{}, 1000);' "${pidFile}"`,
+          timeout_ms: 30_000,
+        });
+        const deadline = Date.now() + 5000;
+        while (!existsSync(pidFile) && Date.now() < deadline) {
+          await Bun.sleep(20);
+        }
+        const childPid = Number(readFileSync(pidFile, "utf8").trim());
+        expect(childPid).toBeGreaterThan(0);
+        await enabledServer.shutdown(true);
+        await inflight.catch(() => {});
+        expect(() => process.kill(childPid, 0)).toThrow();
+      }
     } finally {
       await enabledServer.shutdown(true);
     }

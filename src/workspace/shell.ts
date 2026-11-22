@@ -26,6 +26,7 @@ const NOFOLLOW =
 interface ActiveShellEntry {
   proc: Bun.Subprocess<"ignore", "pipe", "pipe">;
   abortController: AbortController;
+  completion: Promise<void>;
 }
 
 const activeShellProcs = new Set<ActiveShellEntry>();
@@ -45,11 +46,11 @@ export async function stopAllActiveShellProcesses(
     signalProcessGroup(proc, "SIGTERM");
   }
   await Promise.all(
-    entries.map(async ({ proc, abortController }) => {
+    entries.map(async ({ proc, abortController, completion }) => {
       let timer: ReturnType<typeof setTimeout> | undefined;
       try {
         await Promise.race([
-          proc.exited,
+          completion,
           new Promise<void>((resolveWait) => {
             timer = setTimeout(() => {
               signalProcessGroup(proc, "SIGKILL");
@@ -58,6 +59,11 @@ export async function stopAllActiveShellProcesses(
             }, graceMs);
           }),
         ]);
+        if (POSIX) {
+          signalProcessGroup(proc, "SIGKILL");
+        }
+        abortController.abort();
+        await completion;
       } finally {
         if (timer) clearTimeout(timer);
       }
@@ -260,7 +266,12 @@ export async function runShellTool(
 
   let timedOut = false;
   const abortController = new AbortController();
-  const activeEntry: ActiveShellEntry = { proc, abortController };
+  const completionDeferred = Promise.withResolvers<void>();
+  const activeEntry: ActiveShellEntry = {
+    proc,
+    abortController,
+    completion: completionDeferred.promise,
+  };
   if (activeShellProcs.size === 0) {
     process.on("exit", killActiveShellsOnExit);
   }
@@ -303,6 +314,7 @@ export async function runShellTool(
     if (activeShellProcs.size === 0) {
       process.off("exit", killActiveShellsOnExit);
     }
+    completionDeferred.resolve();
   });
 
   const totalChars = stdoutRes.text.length + stderrRes.text.length;
