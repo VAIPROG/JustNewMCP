@@ -799,19 +799,29 @@ export class McpRouter {
     }
 
     const id = payload.id ?? null;
+    const sessionHeader = req.headers.get("mcp-session-id")?.trim();
+    const sessionKey = sessionHeader
+      ? `session:${clientId}:${sessionHeader}`
+      : `client:${clientId}`;
 
     if (payload.method === "initialize") {
-      return Response.json({
-        jsonrpc: "2.0",
-        id,
-        result: {
-          protocolVersion: "2025-03-26",
-          capabilities: { tools: {} },
-          serverInfo: { name: "JustNewMCP", version: "0.2.0" },
-          instructions:
-            "Call workspace_init first to select a project inside the allowed roots before reading or modifying files.",
+      const sessionId = crypto.randomUUID();
+      return Response.json(
+        {
+          jsonrpc: "2.0",
+          id,
+          result: {
+            protocolVersion: "2025-03-26",
+            capabilities: {
+              tools: { listChanged: this.config.deferredTools === true },
+            },
+            serverInfo: { name: "JustNewMCP", version: "0.2.0" },
+            instructions:
+              "Call workspace_init first to select a project inside the allowed roots before reading or modifying files.",
+          },
         },
-      });
+        { headers: { "Mcp-Session-Id": sessionId } },
+      );
     }
 
     if (payload.method === "notifications/initialized") {
@@ -826,7 +836,7 @@ export class McpRouter {
       return Response.json({
         jsonrpc: "2.0",
         id,
-        result: { tools: this.toolRegistry.listVisibleTools() },
+        result: { tools: this.toolRegistry.listVisibleTools(sessionKey) },
       });
     }
 
@@ -843,7 +853,7 @@ export class McpRouter {
           );
         }
         if (
-          !this.toolRegistry.isToolActive(name) &&
+          !this.toolRegistry.isToolActive(name, sessionKey) &&
           this.toolRegistry.isKnownDeferredTool(name)
         ) {
           throw new Error(
@@ -859,7 +869,13 @@ export class McpRouter {
           this.activeWorkspaceMutations++;
           mutationStarted = true;
         }
-        const result = await this.dispatchTool(name, args, ip, clientId);
+        const result = await this.dispatchTool(
+          name,
+          args,
+          ip,
+          clientId,
+          sessionKey,
+        );
         if (result === null) {
           return Response.json({
             jsonrpc: "2.0",
@@ -868,13 +884,37 @@ export class McpRouter {
           });
         }
         this.audit.record("mcp.tool.called", ip, { clientId, detail: name });
-        return Response.json({
+        const rpcResponse = {
           jsonrpc: "2.0",
           id,
           result: {
             content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
           },
-        });
+        };
+        const listChanged =
+          name === "tool_search" &&
+          typeof result === "object" &&
+          result !== null &&
+          "newlyActivated" in result &&
+          Array.isArray(
+            (result as { newlyActivated?: unknown }).newlyActivated,
+          ) &&
+          (result as { newlyActivated: unknown[] }).newlyActivated.length > 0;
+        const acceptsSse = (req.headers.get("accept") ?? "")
+          .toLowerCase()
+          .includes("text/event-stream");
+        if (listChanged && acceptsSse) {
+          const notification = JSON.stringify({
+            jsonrpc: "2.0",
+            method: "notifications/tools/list_changed",
+          });
+          const sseBody = `event: message\ndata: ${notification}\n\nevent: message\ndata: ${JSON.stringify(rpcResponse)}\n\n`;
+          return new Response(sseBody, {
+            status: 200,
+            headers: { "Content-Type": "text/event-stream; charset=utf-8" },
+          });
+        }
+        return Response.json(rpcResponse);
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         this.audit.record("mcp.tool.denied", ip, {
@@ -906,10 +946,11 @@ export class McpRouter {
     args: Record<string, unknown>,
     ip: string,
     clientId: string,
+    sessionKey: string,
   ): Promise<unknown | null> {
     if (name === "tool_search") {
       const parsed = ToolSearchArgs.parse(args);
-      const result = this.toolRegistry.search(parsed);
+      const result = this.toolRegistry.search(parsed, sessionKey);
       if (result.newlyActivated.length > 0) {
         this.audit.record("mcp.tools.activated", ip, {
           clientId,
