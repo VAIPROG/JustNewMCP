@@ -713,6 +713,33 @@ describe("filesystem tools and local checkpoints", () => {
     expect(giGlob.files).not.toContain("dist/bundle.js");
     expect(giGlob.files).toContain("dist/keep.txt");
 
+    // Directory patterns ending with '/' return matching directories
+    const dirGlob = await globFilesTool(
+      workspaceDir,
+      DEFAULT_DENIED_PATH_PATTERNS,
+      "*/",
+    );
+    expect(dirGlob.files).toContain("src/");
+    expect(dirGlob.files).not.toContain("node_modules/");
+
+    // System Volume Information and unreadable directories are skipped without EPERM/EACCES crash
+    mkdirSync(join(workspaceDir, "System Volume Information"), {
+      recursive: true,
+    });
+    writeFileSync(
+      join(workspaceDir, "System Volume Information", "tracking.log"),
+      "sys",
+      "utf8",
+    );
+    const sysGlob = await globFilesTool(
+      workspaceDir,
+      DEFAULT_DENIED_PATH_PATTERNS,
+      "*/*",
+    );
+    expect(
+      sysGlob.files.some((f) => f.startsWith("System Volume Information/")),
+    ).toBe(false);
+
     const giGrep = await grepFilesTool(
       workspaceDir,
       DEFAULT_DENIED_PATH_PATTERNS,

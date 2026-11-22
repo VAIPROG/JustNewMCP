@@ -5,6 +5,7 @@ import {
   fchmodSync,
   mkdirSync,
   openSync,
+  readdirSync,
   statSync,
   writeFileSync,
 } from "node:fs";
@@ -26,6 +27,11 @@ const ALWAYS_IGNORED_PREFIXES = [
   "node_modules/",
   ".justnewmcp/checkpoints/",
 ];
+const ALWAYS_IGNORED_DIR_NAMES = new Set([
+  "system volume information",
+  "$recycle.bin",
+]);
+const MAX_WALK_ENTRIES = 100_000;
 
 const utf8FatalDecoder = new TextDecoder("utf-8", { fatal: true });
 
@@ -337,6 +343,76 @@ export async function writeFileTool(
   };
 }
 
+function computeMaxDepthForPattern(pattern: string): number | undefined {
+  const clean = pattern.replaceAll("\\", "/").replace(/^\/+|\/+$/g, "");
+  if (!clean || clean.includes("**")) return undefined;
+  return clean.split("/").filter(Boolean).length;
+}
+
+function* walkWorkspaceEntries(
+  workspaceRoot: string,
+  deniedPatterns: string[],
+  isGitignored: (relPosix: string) => boolean,
+  opts: { maxDepth?: number } = {},
+): Generator<{ relPosix: string; fullPath: string; isDir: boolean }> {
+  let visited = 0;
+  const stack: Array<{ absDir: string; relPrefix: string; depth: number }> = [
+    { absDir: workspaceRoot, relPrefix: "", depth: 0 },
+  ];
+
+  while (stack.length > 0 && visited < MAX_WALK_ENTRIES) {
+    const current = stack.pop()!;
+    let entries;
+    try {
+      entries = readdirSync(current.absDir, { withFileTypes: true });
+    } catch {
+      // Skip unreadable directories (e.g. Windows EPERM on System Volume Information)
+      continue;
+    }
+
+    for (const entry of entries) {
+      if (visited >= MAX_WALK_ENTRIES) break;
+      visited += 1;
+      if (entry.isSymbolicLink()) continue;
+
+      const name = entry.name;
+      const relPosix = current.relPrefix
+        ? `${current.relPrefix}/${name}`
+        : name;
+      const fullPath = join(current.absDir, name);
+
+      if (entry.isDirectory()) {
+        if (ALWAYS_IGNORED_DIR_NAMES.has(name.toLowerCase())) continue;
+        if (
+          isIgnoredRelativePath(`${relPosix}/`, deniedPatterns) ||
+          isIgnoredRelativePath(relPosix, deniedPatterns)
+        ) {
+          continue;
+        }
+        if (!isGitignored(`${relPosix}/`)) {
+          yield { relPosix, fullPath, isDir: true };
+        }
+        const nextDepth = current.depth + 1;
+        if (opts.maxDepth === undefined || nextDepth < opts.maxDepth) {
+          stack.push({
+            absDir: fullPath,
+            relPrefix: relPosix,
+            depth: nextDepth,
+          });
+        }
+      } else if (entry.isFile()) {
+        if (
+          isIgnoredRelativePath(relPosix, deniedPatterns) ||
+          isGitignored(relPosix)
+        ) {
+          continue;
+        }
+        yield { relPosix, fullPath, isDir: false };
+      }
+    }
+  }
+}
+
 export async function globFilesTool(
   workspaceRoot: string,
   deniedPatterns: string[],
@@ -345,37 +421,39 @@ export async function globFilesTool(
 ): Promise<{ files: string[]; truncated: boolean }> {
   const capped = Math.max(1, Math.min(limit, 1000));
   const isGitignored = loadGitignoreMatcher(workspaceRoot);
-  const glob = new Bun.Glob(pattern);
+  const normalizedPattern = pattern.replaceAll("\\", "/");
+  const dirOnly = normalizedPattern.endsWith("/");
+  const matchPattern = dirOnly
+    ? normalizedPattern.replace(/\/+$/, "")
+    : normalizedPattern;
+  const glob = new Bun.Glob(matchPattern || "*");
+  const maxDepth = computeMaxDepthForPattern(normalizedPattern);
+  const combinedDenied = [...deniedPatterns, ...INTERNAL_PROTECTED_PATTERNS];
   const candidates: Array<{ rel: string; mtimeMs: number }> = [];
 
-  for await (const rawRel of glob.scan({
-    cwd: workspaceRoot,
-    onlyFiles: true,
-    dot: true,
-    followSymlinks: false,
-  })) {
-    const relPosix = rawRel.replaceAll("\\", "/");
-    if (
-      isIgnoredRelativePath(relPosix, deniedPatterns) ||
-      isGitignored(relPosix)
-    )
-      continue;
+  for (const entry of walkWorkspaceEntries(
+    workspaceRoot,
+    deniedPatterns,
+    isGitignored,
+    { maxDepth },
+  )) {
+    if (dirOnly && !entry.isDir) continue;
+    if (!dirOnly && entry.isDir) continue;
+    if (!glob.match(entry.relPosix)) continue;
 
     try {
-      const fullPath = join(workspaceRoot, rawRel);
-      const combinedDenied = [
-        ...deniedPatterns,
-        ...INTERNAL_PROTECTED_PATTERNS,
-      ];
       const { resolvedPath } = resolveInsideRoots(
-        fullPath,
+        entry.fullPath,
         [workspaceRoot],
         process.platform,
         combinedDenied,
       );
       const stat = statSync(resolvedPath);
-      if (!stat.isFile()) continue;
-      candidates.push({ rel: relPosix, mtimeMs: stat.mtimeMs });
+      if (dirOnly ? !stat.isDirectory() : !stat.isFile()) continue;
+      candidates.push({
+        rel: dirOnly ? `${entry.relPosix}/` : entry.relPosix,
+        mtimeMs: stat.mtimeMs,
+      });
     } catch {
       continue;
     }
@@ -420,28 +498,24 @@ export async function grepFilesTool(
   let charCount = 0;
   let truncated = false;
 
-  for await (const rawRel of glob.scan({
-    cwd: workspaceRoot,
-    onlyFiles: true,
-    dot: true,
-    followSymlinks: false,
-  })) {
-    const relPosix = rawRel.replaceAll("\\", "/");
-    if (
-      isIgnoredRelativePath(relPosix, deniedPatterns) ||
-      isGitignored(relPosix)
-    )
-      continue;
+  const grepPattern = opts.glob ?? "**/*";
+  const maxDepth = computeMaxDepthForPattern(grepPattern);
+  const combinedDenied = [...deniedPatterns, ...INTERNAL_PROTECTED_PATTERNS];
+
+  for (const entry of walkWorkspaceEntries(
+    workspaceRoot,
+    deniedPatterns,
+    isGitignored,
+    { maxDepth },
+  )) {
+    if (entry.isDir) continue;
+    const relPosix = entry.relPosix;
+    if (!glob.match(relPosix)) continue;
 
     let resolvedPath: string;
     try {
-      const fullPath = join(workspaceRoot, rawRel);
-      const combinedDenied = [
-        ...deniedPatterns,
-        ...INTERNAL_PROTECTED_PATTERNS,
-      ];
       const res = resolveInsideRoots(
-        fullPath,
+        entry.fullPath,
         [workspaceRoot],
         process.platform,
         combinedDenied,
