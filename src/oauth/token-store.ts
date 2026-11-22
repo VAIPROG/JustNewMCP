@@ -3,14 +3,21 @@ import {
   constants as fsConstants,
   fchmodSync,
   fstatSync,
+  fsyncSync,
   mkdirSync,
   openSync,
   readFileSync,
+  renameSync,
+  rmSync,
   writeFileSync,
 } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-import { sha256Hex } from "../security/crypto.ts";
+import {
+  generateRandomToken,
+  sha256Hex,
+  timingSafeEqualStrings,
+} from "../security/crypto.ts";
 import { assertFileOutsideAllowedRoots } from "../workspace/paths.ts";
 
 export interface PersistedTokenRecord {
@@ -21,14 +28,23 @@ export interface PersistedTokenRecord {
 
 interface PersistedTokenPayload {
   version: 1;
+  serverIdentity: string;
   accessTokens: Record<string, PersistedTokenRecord>;
   refreshTokens: Record<string, PersistedTokenRecord>;
 }
 
 const SHA256_HEX_RE = /^[a-f0-9]{64}$/i;
 
-export function defaultTokenStorePath(clientId: string): string {
-  const suffix = sha256Hex(clientId).slice(0, 12);
+export function computeServerIdentity(
+  publicUrl: string,
+  clientId: string,
+  clientSecret: string,
+): string {
+  return sha256Hex(`${publicUrl}\0${clientId}\0${sha256Hex(clientSecret)}`);
+}
+
+export function defaultTokenStorePath(serverIdentity: string): string {
+  const suffix = serverIdentity.slice(0, 12);
   return join(homedir(), ".justnewmcp", `oauth-tokens-${suffix}.json`);
 }
 
@@ -81,10 +97,12 @@ function mapToPrunedRecord(
 
 export class HashedTokenStore {
   readonly filePath: string;
+  private readonly serverIdentity: string;
 
   constructor(
     filePath: string,
     allowedRoots: string[],
+    serverIdentity: string,
     platform: NodeJS.Platform = process.platform,
   ) {
     this.filePath = assertFileOutsideAllowedRoots(
@@ -93,6 +111,7 @@ export class HashedTokenStore {
       "OAuth token store file",
       platform,
     );
+    this.serverIdentity = serverIdentity;
   }
 
   load(now = Date.now()): {
@@ -156,7 +175,11 @@ export class HashedTokenStore {
     }
 
     const obj = parsed as Record<string, unknown>;
-    if (obj.version !== 1) {
+    if (
+      obj.version !== 1 ||
+      typeof obj.serverIdentity !== "string" ||
+      !timingSafeEqualStrings(obj.serverIdentity, this.serverIdentity)
+    ) {
       return {
         accessTokens: new Map(),
         refreshTokens: new Map(),
@@ -179,6 +202,7 @@ export class HashedTokenStore {
 
     const payload: PersistedTokenPayload = {
       version: 1,
+      serverIdentity: this.serverIdentity,
       accessTokens: mapToPrunedRecord(accessTokens, now),
       refreshTokens: mapToPrunedRecord(refreshTokens, now),
     };
@@ -187,11 +211,12 @@ export class HashedTokenStore {
       process.platform !== "win32" && typeof fsConstants.O_NOFOLLOW === "number"
         ? fsConstants.O_NOFOLLOW
         : 0;
+    const tmpPath = `${this.filePath}.${process.pid}.${generateRandomToken(8)}.tmp`;
     const fd = openSync(
-      this.filePath,
+      tmpPath,
       fsConstants.O_WRONLY |
         fsConstants.O_CREAT |
-        fsConstants.O_TRUNC |
+        fsConstants.O_EXCL |
         noFollowFlag,
       0o600,
     );
@@ -200,8 +225,19 @@ export class HashedTokenStore {
         fchmodSync(fd, 0o600);
       }
       writeFileSync(fd, `${JSON.stringify(payload, null, 2)}\n`, "utf8");
-    } finally {
+      fsyncSync(fd);
+    } catch (err) {
       closeSync(fd);
+      rmSync(tmpPath, { force: true });
+      throw err;
+    }
+    closeSync(fd);
+
+    try {
+      renameSync(tmpPath, this.filePath);
+    } catch (err) {
+      rmSync(tmpPath, { force: true });
+      throw err;
     }
   }
 }

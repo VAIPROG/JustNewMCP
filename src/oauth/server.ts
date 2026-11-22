@@ -10,7 +10,11 @@ import {
 import { readBodyWithinLimit } from "../security/headers.ts";
 import { IpRateLimiter } from "../security/rate-limiter.ts";
 import { renderAuthorizePage } from "../ui/pages.ts";
-import { defaultTokenStorePath, HashedTokenStore } from "./token-store.ts";
+import {
+  computeServerIdentity,
+  defaultTokenStorePath,
+  HashedTokenStore,
+} from "./token-store.ts";
 
 interface AuthCodeRecord {
   clientId: string;
@@ -148,10 +152,18 @@ export class OAuthServer {
     this.approvalCode = options.initialApprovalCode ?? generateApprovalCode();
 
     if (!config.oauth.inMemoryTokens) {
+      const serverIdentity = computeServerIdentity(
+        config.publicUrl,
+        config.oauth.clientId,
+        config.oauth.clientSecret,
+      );
       const storePath =
-        config.oauth.tokenStorePath ??
-        defaultTokenStorePath(config.oauth.clientId);
-      this.tokenStore = new HashedTokenStore(storePath, config.allowedRoots);
+        config.oauth.tokenStorePath ?? defaultTokenStorePath(serverIdentity);
+      this.tokenStore = new HashedTokenStore(
+        storePath,
+        config.allowedRoots,
+        serverIdentity,
+      );
       const loaded = this.tokenStore.load();
       for (const [hash, record] of loaded.accessTokens) {
         this.accessTokens.set(hash, record);

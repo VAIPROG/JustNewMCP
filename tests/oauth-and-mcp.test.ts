@@ -725,6 +725,38 @@ describe("OAuth 2.1 security hardening and MCP /mcp integration", () => {
       expect(persistedRaw).not.toContain(tokens.access_token);
       expect(persistedRaw).not.toContain(tokens.refresh_token);
 
+      const otherSecretConfig = ConfigSchema.parse({
+        host: "127.0.0.1",
+        port: 0,
+        publicUrl: "https://mcp.example.com",
+        trustedProxies: ["127.0.0.1", "::1"],
+        allowedRoots: [tempRoot],
+        oauth: {
+          clientId: "persist-test-client",
+          clientSecret: "different-server-secret-value-0987654321",
+          allowedRedirectUris: [redirectUri],
+          inMemoryTokens: false,
+          tokenStorePath,
+        },
+      });
+      const foreignSrv = createAppServer(otherSecretConfig);
+      try {
+        const foreignPing = await fetch(
+          `http://127.0.0.1:${foreignSrv.server.port}/mcp`,
+          {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              Authorization: `Bearer ${tokens.access_token}`,
+            },
+            body: JSON.stringify({ jsonrpc: "2.0", id: 99, method: "ping" }),
+          },
+        );
+        expect(foreignPing.status).toBe(401);
+      } finally {
+        await foreignSrv.shutdown(true);
+      }
+
       const srv2 = createAppServer(makeConfig(false, tokenStorePath));
       let refreshed: { access_token: string; refresh_token: string };
       try {
