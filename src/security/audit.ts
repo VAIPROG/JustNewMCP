@@ -6,6 +6,8 @@ export type AuditEventType =
   | "oauth.token.revoked"
   | "oauth.rate_limited"
   | "mcp.auth.denied"
+  | "mcp.cmd.background_started"
+  | "mcp.cmd.background_stopped"
   | "mcp.plan.entered"
   | "mcp.plan.exited"
   | "mcp.tool.called"

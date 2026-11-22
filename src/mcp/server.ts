@@ -2,6 +2,7 @@ import { z } from "zod";
 import type { AppConfig } from "../config.ts";
 import { AuditLogger } from "../security/audit.ts";
 import { readBodyWithinLimit } from "../security/headers.ts";
+import { BackgroundJobManager } from "../workspace/background-jobs.ts";
 import { listCheckpoints, rewindCheckpoint } from "../workspace/checkpoints.ts";
 import { runAllowedCmdTool } from "../workspace/cmd-runner.ts";
 import {
@@ -113,6 +114,17 @@ const RunAllowedCmdArgs = z.object({
   command: z.string().min(1).max(128),
   args: z.array(z.string().max(4096)).max(100).optional(),
   timeout_ms: z.number().int().min(100).max(600_000).optional(),
+  background: z.boolean().default(false),
+});
+
+const JobId = z.uuid();
+const CmdStatusArgs = z.object({
+  job_id: JobId.optional(),
+  tail_chars: z.number().int().min(1).max(30_000).default(4000),
+});
+const TaskStopArgs = z.object({
+  job_id: JobId,
+  grace_ms: z.number().int().min(0).max(10_000).default(2000),
 });
 
 const TaskIdArgs = z.object({ id: z.string().min(1) });
@@ -179,6 +191,7 @@ const PLAN_BLOCKED_TOOLS = new Set([
   "set_env_var",
   "checkpoint_rewind",
   "run_allowed_cmd",
+  "task_stop",
   "memory_write",
   "worktree_enter",
   "worktree_exit",
@@ -364,15 +377,50 @@ const TOOL_DEFINITIONS = [
   {
     name: "run_allowed_cmd",
     description:
-      "Run an allowlisted executable directly via argv array without a shell, spilling outputs over maxOutputChars to .justnewmcp/logs/.",
+      "Run an allowlisted executable directly without a shell, optionally starting a background job with a bounded log.",
     inputSchema: {
       type: "object",
       properties: {
         command: { type: "string" },
         args: { type: "array", items: { type: "string" } },
         timeout_ms: { type: "integer", minimum: 100, maximum: 600000 },
+        background: { type: "boolean", default: false },
       },
       required: ["command"],
+    },
+  },
+  {
+    name: "cmd_status",
+    description:
+      "List background jobs or inspect one job with a bounded log tail.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        job_id: { type: "string", format: "uuid" },
+        tail_chars: {
+          type: "integer",
+          minimum: 1,
+          maximum: 30000,
+          default: 4000,
+        },
+      },
+    },
+  },
+  {
+    name: "task_stop",
+    description: "Stop a background command and report its final status.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        job_id: { type: "string", format: "uuid" },
+        grace_ms: {
+          type: "integer",
+          minimum: 0,
+          maximum: 10000,
+          default: 2000,
+        },
+      },
+      required: ["job_id"],
     },
   },
   {
@@ -529,6 +577,7 @@ export class McpRouter {
   private readonly worktreeState = createWorktreeState();
   private readonly readTracker = new Set<string>();
   private readonly tasks = new TaskManager();
+  private readonly backgroundJobs = new BackgroundJobManager();
   private readonly plan = new PlanMode();
   private activeWorkspaceMutations = 0;
 
@@ -536,6 +585,10 @@ export class McpRouter {
     private readonly config: AppConfig,
     private readonly audit: AuditLogger = new AuditLogger(),
   ) {}
+
+  stopAllBackgroundJobs(): Promise<void> {
+    return this.backgroundJobs.stopAllBackgroundJobs();
+  }
 
   private requireActiveWorkspace(): string {
     if (!this.workspaceState.activeRoot) {
@@ -877,11 +930,45 @@ export class McpRouter {
     if (name === "run_allowed_cmd") {
       const root = this.requireActiveWorkspace();
       const parsed = RunAllowedCmdArgs.parse(args);
-      return runAllowedCmdTool(root, this.config.allowedCommands, {
-        command: parsed.command,
-        args: parsed.args,
-        timeoutMs: parsed.timeout_ms,
+      const result = await runAllowedCmdTool(
+        root,
+        this.config.allowedCommands,
+        {
+          command: parsed.command,
+          args: parsed.args,
+          timeoutMs: parsed.timeout_ms,
+          background: parsed.background,
+        },
+        this.backgroundJobs,
+      );
+      if ("jobId" in result) {
+        this.audit.record("mcp.cmd.background_started", ip, {
+          clientId,
+          detail: result.jobId,
+        });
+      }
+      return result;
+    }
+
+    if (name === "cmd_status") {
+      const { job_id, tail_chars } = CmdStatusArgs.parse(args);
+      return job_id
+        ? this.backgroundJobs.status(
+            job_id,
+            tail_chars,
+            this.config.allowedRoots,
+          )
+        : { jobs: this.backgroundJobs.list() };
+    }
+
+    if (name === "task_stop") {
+      const { job_id, grace_ms } = TaskStopArgs.parse(args);
+      const result = await this.backgroundJobs.stop(job_id, grace_ms);
+      this.audit.record("mcp.cmd.background_stopped", ip, {
+        clientId,
+        detail: job_id,
       });
+      return result;
     }
 
     if (name === "memory_read") {

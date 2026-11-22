@@ -23,6 +23,7 @@ export interface RunningServer {
   oauth: OAuthServer;
   mcp: McpRouter;
   audit: AuditLogger;
+  shutdown(closeActiveConnections?: boolean): Promise<void>;
 }
 
 export interface CreateServerOptions {
@@ -146,7 +147,35 @@ export function createAppServer(
     },
   });
 
-  return { server, oauth, mcp, audit };
+  const stopListening = server.stop.bind(server);
+  const shutdown = async (closeActiveConnections?: boolean) => {
+    await Promise.all([
+      stopListening(closeActiveConnections),
+      mcp.stopAllBackgroundJobs(),
+    ]);
+  };
+  server.stop = shutdown;
+
+  return { server, oauth, mcp, audit, shutdown };
+}
+
+export function installShutdownSignalHandlers(
+  shutdown: RunningServer["shutdown"],
+): void {
+  let shuttingDown = false;
+  const stopOnSignal = (code: number) => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    void shutdown(true).then(
+      () => process.exit(code),
+      (err) => {
+        console.error("Server shutdown failed:", err);
+        process.exit(1);
+      },
+    );
+  };
+  process.once("SIGINT", () => stopOnSignal(130));
+  process.once("SIGTERM", () => stopOnSignal(143));
 }
 
 if (import.meta.main) {
@@ -159,7 +188,7 @@ if (import.meta.main) {
         config.allowedRoots,
       )
     : "";
-  const { server, oauth } = createAppServer(config, {
+  const { server, oauth, shutdown } = createAppServer(config, {
     onApprovalCodeRotated(code) {
       writeApprovalCodeFile(approvalCodeFile, code);
       console.log(
@@ -178,6 +207,7 @@ if (import.meta.main) {
     );
   }
   writeApprovalCodeFile(approvalCodeFile, oauth.getApprovalCode());
+  installShutdownSignalHandlers(shutdown);
   console.log(
     `JustNewMCP listening on http://${server.hostname}:${server.port} (Bun ${bunVersion})`,
   );
