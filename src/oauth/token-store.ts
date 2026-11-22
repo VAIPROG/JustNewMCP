@@ -9,6 +9,7 @@ import {
   readFileSync,
   renameSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from "node:fs";
 import { homedir } from "node:os";
@@ -180,29 +181,69 @@ export class HashedTokenStore {
         ) {
           const reclaimPath = `${this.lockPath}.reclaim`;
           let reclaimFd: number | undefined;
+          let reclaimed = false;
           try {
-            reclaimFd = openSync(
-              reclaimPath,
-              fsConstants.O_WRONLY |
-                fsConstants.O_CREAT |
-                fsConstants.O_EXCL |
-                noFollowFlag,
-              0o600,
-            );
-            const recheckedPid = readOwnerPid();
-            if (recheckedPid === existingPid && !isProcessAlive(recheckedPid)) {
-              rmSync(this.lockPath, { force: true });
-              continue;
+            for (let r = 0; r < 2; r += 1) {
+              try {
+                reclaimFd = openSync(
+                  reclaimPath,
+                  fsConstants.O_WRONLY |
+                    fsConstants.O_CREAT |
+                    fsConstants.O_EXCL |
+                    noFollowFlag,
+                  0o600,
+                );
+                writeFileSync(reclaimFd, payload, "utf8");
+                break;
+              } catch (reclaimErr) {
+                if ((reclaimErr as NodeJS.ErrnoException).code !== "EEXIST") {
+                  throw reclaimErr;
+                }
+                let guardDead = false;
+                try {
+                  const guardRaw = readFileSync(reclaimPath, "utf8");
+                  const guardParsed = JSON.parse(guardRaw) as { pid?: unknown };
+                  if (
+                    typeof guardParsed.pid === "number" &&
+                    guardParsed.pid !== process.pid &&
+                    !isProcessAlive(guardParsed.pid)
+                  ) {
+                    guardDead = true;
+                  }
+                } catch {
+                  try {
+                    if (Date.now() - statSync(reclaimPath).mtimeMs > 5000) {
+                      guardDead = true;
+                    }
+                  } catch {
+                    guardDead = true;
+                  }
+                }
+                if (guardDead) {
+                  rmSync(reclaimPath, { force: true });
+                  continue;
+                }
+                break;
+              }
             }
-          } catch (reclaimErr) {
-            if ((reclaimErr as NodeJS.ErrnoException).code !== "EEXIST") {
-              throw reclaimErr;
+            if (reclaimFd !== undefined) {
+              const recheckedPid = readOwnerPid();
+              if (
+                recheckedPid === existingPid &&
+                !isProcessAlive(recheckedPid)
+              ) {
+                rmSync(this.lockPath, { force: true });
+                reclaimed = true;
+              }
             }
           } finally {
             if (reclaimFd !== undefined) {
               closeSync(reclaimFd);
               rmSync(reclaimPath, { force: true });
             }
+          }
+          if (reclaimed) {
+            continue;
           }
         }
         throw new Error(
