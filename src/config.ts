@@ -15,6 +15,7 @@ export const DEFAULT_DENIED_PATH_PATTERNS = [
 export const DEFAULT_ALLOWED_REDIRECT_URIS = [
   "https://gemini.google.com/",
   "https://aistudio.google.com/",
+  "https://oauth-redirect.googleusercontent.com/",
   "http://127.0.0.1",
   "http://localhost",
 ];

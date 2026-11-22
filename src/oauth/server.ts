@@ -272,12 +272,12 @@ export class OAuthServer {
       maxAge: Math.floor(CSRF_TTL_MS / 1000),
     });
 
+    const redirectOrigin = new URL(redirectUri).origin;
     return new Response(html, {
       status: 200,
       headers: {
         "Content-Type": "text/html; charset=utf-8",
-        "Content-Security-Policy":
-          "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'",
+        "Content-Security-Policy": `default-src 'none'; style-src 'unsafe-inline'; form-action 'self' ${redirectOrigin}; frame-ancestors 'none'`,
         "Set-Cookie": cookie.toString(),
       },
     });
