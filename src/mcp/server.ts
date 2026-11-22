@@ -28,6 +28,11 @@ import {
   TASK_STATUSES,
   TaskManager,
 } from "../workspace/tasks.ts";
+import {
+  createWorktreeState,
+  worktreeEnterTool,
+  worktreeExitTool,
+} from "../workspace/worktree.ts";
 
 interface JsonRpcRequest {
   jsonrpc: "2.0";
@@ -141,6 +146,18 @@ const MemorySearchArgs = z.object({
   max_matches: z.number().int().min(1).max(200).optional(),
 });
 
+const WorktreeEnterArgs = z.object({
+  name: z.string().min(1).max(64).optional(),
+  branch: z.string().min(1).max(128).optional(),
+  base_ref: z.string().min(1).max(128).optional(),
+});
+
+const WorktreeExitArgs = z.object({
+  action: z.enum(["keep", "remove"]).optional(),
+  delete_branch: z.boolean().optional(),
+  force: z.boolean().optional(),
+});
+
 const TASK_PROPERTIES = {
   title: { type: "string", minLength: 1, maxLength: TASK_FIELD_LIMITS.title },
   status: { type: "string", enum: TASK_STATUSES },
@@ -163,6 +180,8 @@ const PLAN_BLOCKED_TOOLS = new Set([
   "checkpoint_rewind",
   "run_allowed_cmd",
   "memory_write",
+  "worktree_enter",
+  "worktree_exit",
 ]);
 
 const TOOL_DEFINITIONS = [
@@ -450,6 +469,56 @@ const TOOL_DEFINITIONS = [
       required: ["pattern"],
     },
   },
+  {
+    name: "worktree_enter",
+    description:
+      "Create or attach an isolated git worktree under .justnewmcp/worktrees and switch the active workspace to it.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        name: {
+          type: "string",
+          description:
+            "Optional worktree folder slug (alphanumeric, dot, underscore, hyphen)",
+        },
+        branch: {
+          type: "string",
+          description:
+            "Git branch name to create or attach (default: worktree/<name>)",
+        },
+        base_ref: {
+          type: "string",
+          description:
+            "Base git ref when creating a new branch (default: HEAD)",
+        },
+      },
+    },
+  },
+  {
+    name: "worktree_exit",
+    description:
+      "Exit the active git worktree session, restoring the original workspace and optionally removing the worktree and branch.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        action: {
+          type: "string",
+          enum: ["keep", "remove"],
+          description: "Keep or remove the worktree directory (default: keep)",
+        },
+        delete_branch: {
+          type: "boolean",
+          description:
+            "Delete the worktree branch when action is remove (default: false)",
+        },
+        force: {
+          type: "boolean",
+          description:
+            "Force removal even with uncommitted changes or unmerged commits (default: false)",
+        },
+      },
+    },
+  },
 ];
 
 export class McpRouter {
@@ -457,6 +526,7 @@ export class McpRouter {
     activeRoot: null,
     matchedAllowedRoot: null,
   };
+  private readonly worktreeState = createWorktreeState();
   private readonly readTracker = new Set<string>();
   private readonly tasks = new TaskManager();
   private readonly plan = new PlanMode();
@@ -651,7 +721,7 @@ export class McpRouter {
     if (name === "workspace_init") {
       const parsed = WorkspaceInitArgs.parse(args);
       this.readTracker.clear();
-      return initializeWorkspace(
+      const result = await initializeWorkspace(
         parsed.path,
         this.config.allowedRoots,
         this.workspaceState,
@@ -660,12 +730,20 @@ export class McpRouter {
           memoryDir: this.config.memoryDir,
         },
       );
+      if (
+        this.worktreeState.active &&
+        this.worktreeState.active.worktreePath !== result.workspace
+      ) {
+        this.worktreeState.active = null;
+      }
+      return result;
     }
 
     if (name === "workspace_info") {
       return {
         activeRoot: this.workspaceState.activeRoot,
         matchedAllowedRoot: this.workspaceState.matchedAllowedRoot,
+        activeWorktree: this.worktreeState.active,
         allowedRoots: this.config.allowedRoots,
         deniedPathPatterns: this.config.deniedPathPatterns,
       };
@@ -833,6 +911,46 @@ export class McpRouter {
         maxMatches: parsed.max_matches,
         deniedPatterns: this.config.deniedPathPatterns,
       });
+    }
+
+    if (name === "worktree_enter") {
+      const root = this.requireActiveWorkspace();
+      const parsed = WorktreeEnterArgs.parse(args);
+      return worktreeEnterTool(
+        root,
+        this.config.allowedRoots,
+        this.workspaceState,
+        this.worktreeState,
+        this.readTracker,
+        {
+          deniedPatterns: this.config.deniedPathPatterns,
+          memoryDir: this.config.memoryDir,
+        },
+        {
+          name: parsed.name,
+          branch: parsed.branch,
+          baseRef: parsed.base_ref,
+        },
+      );
+    }
+
+    if (name === "worktree_exit") {
+      const parsed = WorktreeExitArgs.parse(args);
+      return worktreeExitTool(
+        this.config.allowedRoots,
+        this.workspaceState,
+        this.worktreeState,
+        this.readTracker,
+        {
+          deniedPatterns: this.config.deniedPathPatterns,
+          memoryDir: this.config.memoryDir,
+        },
+        {
+          action: parsed.action,
+          deleteBranch: parsed.delete_branch,
+          force: parsed.force,
+        },
+      );
     }
 
     return null;
