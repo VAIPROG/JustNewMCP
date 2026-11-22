@@ -8,6 +8,7 @@ import {
   verifyPkceS256,
 } from "../security/crypto.ts";
 import { readBodyWithinLimit } from "../security/headers.ts";
+import { renderAuthorizePage } from "../ui/pages.ts";
 import { IpRateLimiter } from "../security/rate-limiter.ts";
 
 interface AuthCodeRecord {
@@ -228,58 +229,13 @@ export class OAuthServer {
       return new Response("PKCE S256 is required", { status: 400 });
     }
 
-    // Stateless HMAC-signed CSRF token via Bun.CSRF bound to an HttpOnly session cookie (zero server memory)
-    const csrfSessionId = generateRandomToken(24);
-    const csrfToken = Bun.CSRF.generate(this.csrfSecret, {
-      sessionId: csrfSessionId,
-      expiresIn: CSRF_TTL_MS,
-    });
-
-    const html = `<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8" />
-  <title>Authorize JustNewMCP</title>
-  <style>
-    body { font-family: system-ui, sans-serif; max-width: 420px; margin: 64px auto; padding: 0 16px; color: #111; }
-    input, button { width: 100%; padding: 10px; margin-top: 8px; box-sizing: border-box; font-size: 15px; }
-    button { background: #111; color: #fff; border: 0; cursor: pointer; }
-    code { background: #f3f3f3; padding: 2px 5px; }
-  </style>
-</head>
-<body>
-  <h1>Approve MCP access</h1>
-  <p>Client <code>${Bun.escapeHTML(clientId)}</code> is requesting scope <code>${Bun.escapeHTML(scope)}</code>.</p>
-  <form method="POST" action="/oauth/authorize">
-    <input type="hidden" name="csrf_token" value="${Bun.escapeHTML(csrfToken)}" />
-    <input type="hidden" name="client_id" value="${Bun.escapeHTML(clientId)}" />
-    <input type="hidden" name="redirect_uri" value="${Bun.escapeHTML(redirectUri)}" />
-    <input type="hidden" name="code_challenge" value="${Bun.escapeHTML(codeChallenge)}" />
-    <input type="hidden" name="state" value="${Bun.escapeHTML(state)}" />
-    <input type="hidden" name="scope" value="${Bun.escapeHTML(scope)}" />
-    <label for="approval_code">Terminal approval code</label>
-    <input id="approval_code" name="approval_code" autocomplete="off" required />
-    <button type="submit">Approve</button>
-  </form>
-</body>
-</html>`;
-
-    const cookie = new Bun.Cookie(CSRF_SESSION_COOKIE, csrfSessionId, {
-      httpOnly: true,
-      sameSite: "strict",
-      path: "/oauth/authorize",
-      secure: this.config.publicUrl.startsWith("https://"),
-      maxAge: Math.floor(CSRF_TTL_MS / 1000),
-    });
-
-    const redirectOrigin = new URL(redirectUri).origin;
-    return new Response(html, {
+    return this.buildAuthorizePageResponse({
+      clientId,
+      scope,
+      redirectUri,
+      codeChallenge,
+      state,
       status: 200,
-      headers: {
-        "Content-Type": "text/html; charset=utf-8",
-        "Content-Security-Policy": `default-src 'none'; style-src 'unsafe-inline'; form-action 'self' ${redirectOrigin}; frame-ancestors 'none'`,
-        "Set-Cookie": cookie.toString(),
-      },
     });
   }
 
@@ -358,11 +314,19 @@ export class OAuthServer {
         clientId,
         detail: "invalid_approval_code",
       });
-      return new Response("Invalid approval code", {
+      const errorMessage = fail.locked
+        ? `Invalid approval code. Too many failed attempts; try again in ${fail.retryAfterSec} seconds.`
+        : "Invalid approval code. Check your local approval-code file and try again.";
+      return this.buildAuthorizePageResponse({
+        clientId,
+        scope,
+        redirectUri,
+        codeChallenge,
+        state,
         status: fail.locked ? 429 : 403,
-        headers: fail.locked
-          ? { "Retry-After": String(fail.retryAfterSec) }
-          : undefined,
+        errorMessage,
+        locked: fail.locked,
+        retryAfterSec: fail.locked ? fail.retryAfterSec : undefined,
       });
     }
 
@@ -391,6 +355,52 @@ export class OAuthServer {
         Location: target.toString(),
       },
     });
+  }
+
+  private buildAuthorizePageResponse(opts: {
+    clientId: string;
+    scope: string;
+    redirectUri: string;
+    codeChallenge: string;
+    state: string;
+    status: number;
+    errorMessage?: string;
+    locked?: boolean;
+    retryAfterSec?: number;
+  }): Response {
+    const csrfSessionId = generateRandomToken(24);
+    const csrfToken = Bun.CSRF.generate(this.csrfSecret, {
+      sessionId: csrfSessionId,
+      expiresIn: CSRF_TTL_MS,
+    });
+    const redirectOrigin = new URL(opts.redirectUri).origin;
+    const html = renderAuthorizePage({
+      clientId: opts.clientId,
+      scope: opts.scope,
+      redirectUri: opts.redirectUri,
+      redirectOrigin,
+      codeChallenge: opts.codeChallenge,
+      state: opts.state,
+      csrfToken,
+      errorMessage: opts.errorMessage,
+      locked: opts.locked,
+    });
+    const cookie = new Bun.Cookie(CSRF_SESSION_COOKIE, csrfSessionId, {
+      httpOnly: true,
+      sameSite: "strict",
+      path: "/oauth/authorize",
+      secure: this.config.publicUrl.startsWith("https://"),
+      maxAge: Math.floor(CSRF_TTL_MS / 1000),
+    });
+    const headers: Record<string, string> = {
+      "Content-Type": "text/html; charset=utf-8",
+      "Content-Security-Policy": `default-src 'none'; style-src 'unsafe-inline'; form-action 'self' ${redirectOrigin}; frame-ancestors 'none'`,
+      "Set-Cookie": cookie.toString(),
+    };
+    if (opts.retryAfterSec !== undefined) {
+      headers["Retry-After"] = String(opts.retryAfterSec);
+    }
+    return new Response(html, { status: opts.status, headers });
   }
 
   private extractClientCredentials(
