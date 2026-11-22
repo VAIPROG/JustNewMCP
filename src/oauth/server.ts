@@ -394,7 +394,10 @@ export class OAuthServer {
     });
     const headers: Record<string, string> = {
       "Content-Type": "text/html; charset=utf-8",
-      "Content-Security-Policy": `default-src 'none'; style-src 'unsafe-inline'; form-action 'self' ${redirectOrigin}; frame-ancestors 'none'`,
+      // Omit form-action so Chromium allows multi-hop OAuth callback redirects
+      // (e.g. oauth-redirect.googleusercontent.com -> gemini.google.com).
+      "Content-Security-Policy":
+        "default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'",
       "Set-Cookie": cookie.toString(),
     };
     if (opts.retryAfterSec !== undefined) {
