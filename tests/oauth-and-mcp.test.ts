@@ -362,9 +362,9 @@ describe("OAuth 2.1 security hardening and MCP /mcp integration", () => {
       `${baseUrl}/oauth/authorize?response_type=code&client_id=${clientId}&redirect_uri=${encodeURIComponent(redirectUri)}&code_challenge=${challenge}&code_challenge_method=S256&state=xyz`,
     );
     expect(getAuth.status).toBe(200);
-    expect(getAuth.headers.get("content-security-policy")).toContain(
-      "frame-ancestors 'none'",
-    );
+    const csp = getAuth.headers.get("content-security-policy") ?? "";
+    expect(csp).toContain("frame-ancestors 'none'");
+    expect(csp).toContain("form-action 'self' https://gemini.google.com");
 
     const setCookie = getAuth.headers.get("set-cookie") ?? "";
     const cookieMatch = setCookie.match(/justnewmcp_csrf_sid=([^;]+)/);
