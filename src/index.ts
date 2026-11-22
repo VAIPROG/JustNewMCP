@@ -79,58 +79,71 @@ export function createAppServer(
     initialApprovalCode: options.initialApprovalCode,
     onApprovalCodeRotated: options.onApprovalCodeRotated,
   });
-  const mcp = new McpRouter(config, audit);
+  let mcp: McpRouter;
+  let server: ReturnType<typeof Bun.serve>;
+  try {
+    mcp = new McpRouter(config, audit);
 
-  const server = Bun.serve({
-    hostname: config.host,
-    port: config.port,
-    maxRequestBodySize: Math.max(config.maxMcpBodyBytes, 64 * 1024),
-    async fetch(req: Request, bunServer): Promise<Response> {
-      const url = new URL(req.url);
-      const peerIp = bunServer.requestIP(req)?.address ?? "127.0.0.1";
-      let res: Response;
+    server = Bun.serve({
+      hostname: config.host,
+      port: config.port,
+      maxRequestBodySize: Math.max(config.maxMcpBodyBytes, 64 * 1024),
+      async fetch(req: Request, bunServer): Promise<Response> {
+        const url = new URL(req.url);
+        const peerIp = bunServer.requestIP(req)?.address ?? "127.0.0.1";
+        let res: Response;
 
-      if (req.method === "GET" && url.pathname === "/") {
-        res = new Response(renderLandingPage(config.publicUrl), {
-          status: 200,
-          headers: {
-            "Content-Type": "text/html; charset=utf-8",
-            "Content-Security-Policy":
-              "default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'",
-          },
-        });
-      } else if (req.method === "GET" && url.pathname === "/health") {
-        res = Response.json({ status: "ok", bun: Bun.version });
-      } else if (
-        req.method === "GET" &&
-        url.pathname === "/.well-known/oauth-protected-resource"
-      ) {
-        res = oauth.handleProtectedResourceMetadata();
-      } else if (
-        req.method === "GET" &&
-        url.pathname === "/.well-known/oauth-authorization-server"
-      ) {
-        res = oauth.handleAuthorizationServerMetadata();
-      } else if (url.pathname === "/oauth/authorize" && req.method === "GET") {
-        res = await oauth.handleAuthorizeGet(req);
-      } else if (url.pathname === "/oauth/authorize" && req.method === "POST") {
-        res = await oauth.handleAuthorizePost(req, peerIp);
-      } else if (req.method === "POST" && url.pathname === "/oauth/token") {
-        res = await oauth.handleToken(req, peerIp);
-      } else if (req.method === "POST" && url.pathname === "/oauth/revoke") {
-        res = await oauth.handleRevoke(req, peerIp);
-      } else if (req.method === "POST" && url.pathname === "/mcp") {
-        const auth = oauth.authenticateBearer(req, peerIp);
-        res = auth.ok
-          ? await mcp.handleRequest(req, auth.clientId, auth.ip)
-          : auth.response;
-      } else {
-        res = new Response("Not Found", { status: 404 });
-      }
+        if (req.method === "GET" && url.pathname === "/") {
+          res = new Response(renderLandingPage(config.publicUrl), {
+            status: 200,
+            headers: {
+              "Content-Type": "text/html; charset=utf-8",
+              "Content-Security-Policy":
+                "default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'",
+            },
+          });
+        } else if (req.method === "GET" && url.pathname === "/health") {
+          res = Response.json({ status: "ok", bun: Bun.version });
+        } else if (
+          req.method === "GET" &&
+          url.pathname === "/.well-known/oauth-protected-resource"
+        ) {
+          res = oauth.handleProtectedResourceMetadata();
+        } else if (
+          req.method === "GET" &&
+          url.pathname === "/.well-known/oauth-authorization-server"
+        ) {
+          res = oauth.handleAuthorizationServerMetadata();
+        } else if (
+          url.pathname === "/oauth/authorize" &&
+          req.method === "GET"
+        ) {
+          res = await oauth.handleAuthorizeGet(req);
+        } else if (
+          url.pathname === "/oauth/authorize" &&
+          req.method === "POST"
+        ) {
+          res = await oauth.handleAuthorizePost(req, peerIp);
+        } else if (req.method === "POST" && url.pathname === "/oauth/token") {
+          res = await oauth.handleToken(req, peerIp);
+        } else if (req.method === "POST" && url.pathname === "/oauth/revoke") {
+          res = await oauth.handleRevoke(req, peerIp);
+        } else if (req.method === "POST" && url.pathname === "/mcp") {
+          const auth = oauth.authenticateBearer(req, peerIp);
+          res = auth.ok
+            ? await mcp.handleRequest(req, auth.clientId, auth.ip)
+            : auth.response;
+        } else {
+          res = new Response("Not Found", { status: 404 });
+        }
 
-      return withSecurityHeaders(res);
-    },
-  });
+        return withSecurityHeaders(res);
+      },
+    });
+  } catch (err) {
+    oauth.close();
+    throw err;
+  }
 
   const stopListening = server.stop.bind(server);
   const shutdown = async (closeActiveConnections?: boolean) => {
