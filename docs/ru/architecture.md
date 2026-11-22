@@ -1,24 +1,24 @@
 # Архитектура
 
-JustNewMCP это кроссплатформенный MCP сервер на TypeScript под Bun, рассчитанный на Linux и Windows из коробки. Сервер работает по протоколу Streamable HTTP на эндпоинте `/mcp` за авторизацией OAuth 2.1.
+JustNewMCP это кроссплатформенный MCP сервер на TypeScript под Bun 1.4+, рассчитанный на Linux и Windows из коробки. Сервер работает по протоколу Streamable HTTP на эндпоинте `/mcp` за авторизацией OAuth 2.1.
 
 ## Авторизация и транспорт
 
 - **Эндпоинт.** Streamable HTTP по адресу `https://<host>/mcp`.
-- **OAuth 2.1.** Встроенные эндпоинты `/.well-known/oauth-protected-resource`, `/.well-known/oauth-authorization-server`, `/oauth/authorize` и `/oauth/token` с поддержкой PKCE.
-- **Защита от перебора.** Секреты и токены сравниваются через `crypto.timingSafeEqual`, на ошибочные запросы действует ограничение по IP, а подтверждение подключения требует одноразовый код из локального терминала.
+- **OAuth 2.1.** Встроенные эндпоинты `/.well-known/oauth-protected-resource`, `/.well-known/oauth-authorization-server`, `/oauth/authorize`, `/oauth/token` и `/oauth/revoke` с поддержкой PKCE S256 и stateless `Bun.CSRF`.
+- **Защита от перебора.** Секреты и токены сравниваются через `crypto.timingSafeEqual`, на ошибочные запросы действует ограничение по IP с учетом доверенных прокси, а одноразовый код подтверждения пишется в локальный файл с правами `0600` на каждый инстанс вне `allowedRoots` и не попадает в stdout.
 
 ## Основные модули
 
-1. **Рабочая область и изоляция.** `workspace_init` переключается только внутри разрешенных в конфиге корней после проверок `path.resolve` и `fs.realpath`, подгружая `AGENTS.md` или `CLAUDE.md`, `git status` и индекс памяти. На втором этапе добавляются `worktree_enter` и `worktree_exit`.
-2. **Файлы и чекпоинты.** `read` с нумерацией строк и диапазонами, `edit` с проверкой предварительного чтения и уникальности фрагмента, `write`, `glob` и `grep` с учетом `.gitignore`. Перед каждой записью создается снимок файла для `checkpoint_list` и `checkpoint_rewind`.
-3. **Память проекта.** `memory_read`, `memory_write` и `memory_search` поверх компактного индекса `MEMORY.md` с ограниченным чтением до 25 КБ и 200 строк и ссылками на тематические папки вроде `how-to-use-user-machine/INDEX.md`. Хранится либо в `<workspace>/.justnewmcp/memory/`, либо в отдельной папке `memoryDir/<нормализованный-путь-проекта>/` вроде `C--Users--vaiprog--SomeCoolProject`.
+1. **Рабочая область и изоляция.** `workspace_init` переключается только внутри разрешенных в конфиге корней после проверок `path.resolve` и `fs.realpath`, подгружая `AGENTS.md` или `CLAUDE.md`, `git status` с `core.fsmonitor=false` и индекс памяти. На втором этапе добавляются `worktree_enter` и `worktree_exit` в [#12](https://github.com/VAIPROG/JustNewMCP/issues/12).
+2. **Файлы и чекпоинты.** `read_file` с нумерацией строк и проверкой UTF-8, `edit_file` с проверкой предварительного чтения и уникальности фрагмента, атомарный `multi_edit`, `write_file`, `glob_files` и `grep_files` с учетом `.gitignore` и `deniedPathPatterns`. Перед каждой записью создается снимок файла в `.justnewmcp/checkpoints/` для `checkpoint_list` и `checkpoint_rewind`.
+3. **Память проекта.** `memory_read`, `memory_write` и `memory_search` поверх компактного индекса `MEMORY.md` с ограниченным чтением до 25 КБ и 200 строк на старте и ссылками на тематические папки вроде `how-to-use-user-machine/INDEX.md`. Хранится либо в `<workspace>/.justnewmcp/memory/`, либо в отдельной папке `memoryDir/<нормализованный-путь-проекта>/` вроде `c--users--vaiprog--somecoolproject--<хеш>`. Запись проверяет `deniedPathPatterns`, идет синхронно через один дескриптор с `O_NOFOLLOW` и ставит параллельные `append` в очередь по пути файла.
 4. **Задачи и режим плана.** Серверные инструменты `task_create`, `task_update`, `task_list` и `task_get`, а также `plan_enter` и `plan_exit`, которые программно запрещают запись до выхода из режима плана.
-5. **Белый список команд.** `run_allowed_cmd` сверяет имя бинарника и аргументы `argv` с локальным конфигом и запускает процесс через `Bun.spawn` без шелла. Вывод длиннее 30 тысяч символов сохраняется во временный файл, а в ответ уходит превью на 2 тысячи символов и путь к файлу.
-6. **Поиск инструментов.** На втором этапе на старте отдаются только базовые инструменты и `tool_search`, а расширенные модули включаются по запросу.
-7. **Кодовая аналитика.** На втором этапе добавляется модуль `lsp` для переходов к определениям, поиска ссылок и диагностики типов после правок.
+5. **Белый список команд.** `run_allowed_cmd` сверяет имя бинарника и аргументы `argv` с локальным конфигом и запускает процесс через `Bun.spawn` без шелла. Вывод длиннее 30 тысяч символов сохраняется в `.justnewmcp/logs/` с правами `0600`, а в ответ уходит превью на 2 тысячи символов и путь к файлу. На втором этапе добавляются фоновые процессы с `task_stop` в [#13](https://github.com/VAIPROG/JustNewMCP/issues/13) и опциональный шелл в [#16](https://github.com/VAIPROG/JustNewMCP/issues/16).
+6. **Поиск инструментов.** На втором этапе на старте отдаются только базовые инструменты и `tool_search`, а расширенные модули включаются по запросу в [#14](https://github.com/VAIPROG/JustNewMCP/issues/14).
+7. **Кодовая аналитика.** На втором этапе добавляется модуль `lsp` для переходов к определениям, поиска ссылок и диагностики типов после правок в [#15](https://github.com/VAIPROG/JustNewMCP/issues/15).
 
 ## Этапы реализации
 
-- **Этап 1.** OAuth 2.1, `workspace_init`, файловые инструменты с чекпоинтами, память проекта, трекер задач, режим плана и `run_allowed_cmd` с выгрузкой длинных логов.
-- **Этап 2.** Git worktree, фоновые процессы с `task_stop`, `tool_search`, диагностика LSP и опциональный инструмент для Bash или PowerShell, выключенный по умолчанию.
+- **Этап 1, завершен в `main`.** OAuth 2.1, `workspace_init`, файловые инструменты с чекпоинтами, безопасная работа с `.env`, `memory_read`, `memory_write`, `memory_search`, трекер задач, режим плана, `run_allowed_cmd` с выгрузкой длинных логов и автоматизация безопасности в CI.
+- **Этап 2, в работе.** Git worktree в [#12](https://github.com/VAIPROG/JustNewMCP/issues/12), фоновые процессы с `task_stop` в [#13](https://github.com/VAIPROG/JustNewMCP/issues/13), `tool_search` в [#14](https://github.com/VAIPROG/JustNewMCP/issues/14), диагностика LSP в [#15](https://github.com/VAIPROG/JustNewMCP/issues/15) и опциональный инструмент для Bash или PowerShell в [#16](https://github.com/VAIPROG/JustNewMCP/issues/16), выключенный по умолчанию.
