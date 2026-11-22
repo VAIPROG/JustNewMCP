@@ -175,6 +175,10 @@ export class OAuthServer {
     }
   }
 
+  close(): void {
+    this.tokenStore?.close();
+  }
+
   private persistTokens(now = Date.now()): void {
     if (!this.tokenStore) return;
     try {
@@ -570,12 +574,15 @@ export class OAuthServer {
         );
       }
 
+      const res = this.issueTokenPair(record.clientId, record.scope, {
+        rollbackAuthCode: { hash: codeHash, record },
+      });
       this.rateLimiter.recordSuccess(ip);
       this.audit.record("oauth.token.issued", ip, {
         clientId: record.clientId,
         detail: "authorization_code",
       });
-      return this.issueTokenPair(record.clientId, record.scope);
+      return res;
     }
 
     if (grantType === "refresh_token") {
@@ -654,7 +661,10 @@ export class OAuthServer {
   private issueTokenPair(
     clientId: string,
     scope: string,
-    opts?: { rollbackRefresh?: { hash: string; record: TokenRecord } },
+    opts?: {
+      rollbackAuthCode?: { hash: string; record: AuthCodeRecord };
+      rollbackRefresh?: { hash: string; record: TokenRecord };
+    },
   ): Response {
     const now = Date.now();
     const accessToken = generateRandomToken(32);
@@ -677,6 +687,12 @@ export class OAuthServer {
     } catch (err) {
       this.accessTokens.delete(accessHash);
       this.refreshTokens.delete(refreshHash);
+      if (opts?.rollbackAuthCode) {
+        this.authCodes.set(
+          opts.rollbackAuthCode.hash,
+          opts.rollbackAuthCode.record,
+        );
+      }
       if (opts?.rollbackRefresh) {
         this.refreshTokens.set(
           opts.rollbackRefresh.hash,

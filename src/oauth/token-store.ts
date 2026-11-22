@@ -95,9 +95,21 @@ function mapToPrunedRecord(
   return out;
 }
 
+function isProcessAlive(pid: number): boolean {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    return (err as NodeJS.ErrnoException).code === "EPERM";
+  }
+}
+
 export class HashedTokenStore {
   readonly filePath: string;
+  private readonly lockPath: string;
   private readonly serverIdentity: string;
+  private lockHeld = false;
 
   constructor(
     filePath: string,
@@ -111,7 +123,72 @@ export class HashedTokenStore {
       "OAuth token store file",
       platform,
     );
+    this.lockPath = `${this.filePath}.lock`;
     this.serverIdentity = serverIdentity;
+    this.acquireLock();
+  }
+
+  private acquireLock(): void {
+    mkdirSync(dirname(this.filePath), { recursive: true, mode: 0o700 });
+    const noFollowFlag =
+      process.platform !== "win32" && typeof fsConstants.O_NOFOLLOW === "number"
+        ? fsConstants.O_NOFOLLOW
+        : 0;
+    const payload = `${JSON.stringify({ pid: process.pid, startedAt: Date.now() })}\n`;
+
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      try {
+        const fd = openSync(
+          this.lockPath,
+          fsConstants.O_WRONLY |
+            fsConstants.O_CREAT |
+            fsConstants.O_EXCL |
+            noFollowFlag,
+          0o600,
+        );
+        try {
+          if (process.platform !== "win32") {
+            fchmodSync(fd, 0o600);
+          }
+          writeFileSync(fd, payload, "utf8");
+        } finally {
+          closeSync(fd);
+        }
+        this.lockHeld = true;
+        return;
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code !== "EEXIST") {
+          throw err;
+        }
+        let existingPid: number | undefined;
+        try {
+          const raw = readFileSync(this.lockPath, "utf8");
+          const parsed = JSON.parse(raw) as { pid?: unknown };
+          if (typeof parsed.pid === "number") {
+            existingPid = parsed.pid;
+          }
+        } catch {
+          // Malformed or unreadable lock file treated as active unless retried
+        }
+        if (
+          existingPid !== undefined &&
+          existingPid !== process.pid &&
+          !isProcessAlive(existingPid)
+        ) {
+          rmSync(this.lockPath, { force: true });
+          continue;
+        }
+        throw new Error(
+          `OAuth token store "${this.filePath}" is already in use by another server instance${existingPid ? ` (PID ${existingPid})` : ""}. Use a distinct oauth.tokenStorePath or set oauth.inMemoryTokens: true.`,
+        );
+      }
+    }
+  }
+
+  close(): void {
+    if (!this.lockHeld) return;
+    this.lockHeld = false;
+    rmSync(this.lockPath, { force: true });
   }
 
   load(now = Date.now()): {
