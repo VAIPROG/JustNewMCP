@@ -1,6 +1,7 @@
 import { z } from "zod";
 import type { AppConfig } from "../config.ts";
 import { AuditLogger } from "../security/audit.ts";
+import { ToolRegistry } from "./tool-registry.ts";
 import { readBodyWithinLimit } from "../security/headers.ts";
 import { BackgroundJobManager } from "../workspace/background-jobs.ts";
 import { listCheckpoints, rewindCheckpoint } from "../workspace/checkpoints.ts";
@@ -178,6 +179,12 @@ const WorktreeExitArgs = z.object({
 const RunShellArgs = z.object({
   command: z.string().min(1).max(32_768),
   timeout_ms: z.number().int().min(100).max(600_000).optional(),
+});
+
+const ToolSearchArgs = z.object({
+  query: z.string().max(500).optional(),
+  module: z.string().max(64).optional(),
+  limit: z.number().int().min(1).max(30).optional(),
 });
 
 const TASK_PROPERTIES = {
@@ -677,6 +684,7 @@ export class McpRouter {
   private readonly backgroundJobs = new BackgroundJobManager();
   private readonly plan = new PlanMode();
   private readonly lsp: LspManager;
+  private readonly toolRegistry: ToolRegistry;
   private workspaceChanging = false;
   private workspaceRevision = 0;
   private activeWorkspaceMutations = 0;
@@ -686,6 +694,13 @@ export class McpRouter {
     private readonly audit: AuditLogger = new AuditLogger(),
   ) {
     this.lsp = new LspManager(config.lspServers, config.deniedPathPatterns);
+    const eligibleTools = config.allowShell
+      ? [...TOOL_DEFINITIONS, RUN_SHELL_TOOL_DEFINITION]
+      : TOOL_DEFINITIONS;
+    this.toolRegistry = new ToolRegistry(
+      eligibleTools,
+      config.deferredTools === true,
+    );
   }
 
   async stopAllBackgroundJobs(): Promise<void> {
@@ -808,13 +823,10 @@ export class McpRouter {
     }
 
     if (payload.method === "tools/list") {
-      const tools = this.config.allowShell
-        ? [...TOOL_DEFINITIONS, RUN_SHELL_TOOL_DEFINITION]
-        : TOOL_DEFINITIONS;
       return Response.json({
         jsonrpc: "2.0",
         id,
-        result: { tools },
+        result: { tools: this.toolRegistry.listVisibleTools() },
       });
     }
 
@@ -825,6 +837,19 @@ export class McpRouter {
       let mutationStarted = false;
 
       try {
+        if (name === "run_shell" && this.config.allowShell !== true) {
+          throw new Error(
+            "run_shell is disabled. Set allowShell: true in config to enable.",
+          );
+        }
+        if (
+          !this.toolRegistry.isToolActive(name) &&
+          this.toolRegistry.isKnownDeferredTool(name)
+        ) {
+          throw new Error(
+            `Tool "${name}" is deferred and not yet active. Call tool_search to discover and activate it first.`,
+          );
+        }
         if (changesWorkspace) {
           if (this.plan.active) {
             throw new Error(
@@ -882,6 +907,18 @@ export class McpRouter {
     ip: string,
     clientId: string,
   ): Promise<unknown | null> {
+    if (name === "tool_search") {
+      const parsed = ToolSearchArgs.parse(args);
+      const result = this.toolRegistry.search(parsed);
+      if (result.newlyActivated.length > 0) {
+        this.audit.record("mcp.tools.activated", ip, {
+          clientId,
+          detail: result.newlyActivated.join(","),
+        });
+      }
+      return result;
+    }
+
     if (name === "task_create") {
       return this.tasks.create(TaskCreateArgs.parse(args));
     }
