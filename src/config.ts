@@ -29,11 +29,14 @@ export const RateLimitSchema = z.object({
 export const OAuthConfigSchema = z.object({
   clientId: z.string().min(4),
   clientSecret: z.string().min(16),
-  allowedRedirectUris: z.array(z.string().min(1)).min(1).default(DEFAULT_ALLOWED_REDIRECT_URIS),
+  allowedRedirectUris: z
+    .array(z.string().min(1))
+    .min(1)
+    .default(DEFAULT_ALLOWED_REDIRECT_URIS),
   accessTokenTtlSec: z.number().int().min(60).default(3600),
   refreshTokenTtlSec: z.number().int().min(300).default(604_800),
   authCodeTtlSec: z.number().int().min(30).default(300),
-  rateLimit: RateLimitSchema.default({}),
+  rateLimit: RateLimitSchema.prefault({}),
 });
 
 export const AllowedCommandRuleSchema = z.object({
@@ -41,7 +44,8 @@ export const AllowedCommandRuleSchema = z.object({
     .string()
     .min(1)
     .refine((c) => !c.includes("/") && !c.includes("\\"), {
-      message: "Command must be a bare executable name without path separators.",
+      message:
+        "Command must be a bare executable name without path separators.",
     }),
   allowedSubcommands: z.array(z.string().min(1)).optional(),
   allowedArgs: z.array(z.string().min(1)).optional(),
@@ -55,11 +59,16 @@ export type AllowedCommandRule = z.infer<typeof AllowedCommandRuleSchema>;
 export const ConfigSchema = z.object({
   host: z.string().default("127.0.0.1"),
   port: z.number().int().min(0).max(65535).default(8787),
-  publicUrl: z.string().url().transform((u) => u.replace(/\/+$/, "")),
+  publicUrl: z
+    .string()
+    .url()
+    .transform((u) => u.replace(/\/+$/, "")),
   trustedProxies: z.array(z.string().min(1)).default([]),
   allowedRoots: z.array(z.string().min(1)).min(1),
   memoryDir: z.string().min(1).optional(),
-  deniedPathPatterns: z.array(z.string().min(1)).default(DEFAULT_DENIED_PATH_PATTERNS),
+  deniedPathPatterns: z
+    .array(z.string().min(1))
+    .default(DEFAULT_DENIED_PATH_PATTERNS),
   allowEnvReading: z.boolean().default(false),
   askHumanAllowance: z.boolean().default(false),
   allowedCommands: z.array(AllowedCommandRuleSchema).default([]),
@@ -82,13 +91,19 @@ export function loadConfig(configPath?: string): AppConfig {
   const merged = {
     ...raw,
     host: process.env.JUSTNEWMCP_HOST ?? raw.host,
-    port: process.env.JUSTNEWMCP_PORT ? Number(process.env.JUSTNEWMCP_PORT) : raw.port,
+    port: process.env.JUSTNEWMCP_PORT
+      ? Number(process.env.JUSTNEWMCP_PORT)
+      : raw.port,
     publicUrl: process.env.JUSTNEWMCP_PUBLIC_URL ?? raw.publicUrl,
     trustedProxies: process.env.JUSTNEWMCP_TRUSTED_PROXIES
-      ? process.env.JUSTNEWMCP_TRUSTED_PROXIES.split(",").map((s) => s.trim()).filter(Boolean)
+      ? process.env.JUSTNEWMCP_TRUSTED_PROXIES.split(",")
+          .map((s) => s.trim())
+          .filter(Boolean)
       : raw.trustedProxies,
     allowedRoots: process.env.JUSTNEWMCP_ALLOWED_ROOTS
-      ? process.env.JUSTNEWMCP_ALLOWED_ROOTS.split(",").map((s) => s.trim()).filter(Boolean)
+      ? process.env.JUSTNEWMCP_ALLOWED_ROOTS.split(",")
+          .map((s) => s.trim())
+          .filter(Boolean)
       : raw.allowedRoots,
     memoryDir: process.env.JUSTNEWMCP_MEMORY_DIR ?? raw.memoryDir,
     allowEnvReading:
@@ -102,7 +117,8 @@ export function loadConfig(configPath?: string): AppConfig {
     oauth: {
       ...rawOAuth,
       clientId: process.env.JUSTNEWMCP_CLIENT_ID ?? rawOAuth.clientId,
-      clientSecret: process.env.JUSTNEWMCP_CLIENT_SECRET ?? rawOAuth.clientSecret,
+      clientSecret:
+        process.env.JUSTNEWMCP_CLIENT_SECRET ?? rawOAuth.clientSecret,
     },
   };
 

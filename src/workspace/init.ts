@@ -57,7 +57,10 @@ export async function initializeWorkspace(
   state: WorkspaceState,
   options: WorkspaceInitOptions = {},
 ): Promise<WorkspaceInitResult> {
-  const { resolvedPath, matchedRoot } = resolveInsideRoots(targetPath, allowedRoots);
+  const { resolvedPath, matchedRoot } = resolveInsideRoots(
+    targetPath,
+    allowedRoots,
+  );
   if (!statSync(resolvedPath).isDirectory()) {
     throw new Error(`Workspace path "${resolvedPath}" is not a directory.`);
   }

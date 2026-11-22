@@ -1,7 +1,16 @@
-export const TASK_STATUSES = ["pending", "in_progress", "completed", "blocked"] as const;
+export const TASK_STATUSES = [
+  "pending",
+  "in_progress",
+  "completed",
+  "blocked",
+] as const;
 export type TaskStatus = (typeof TASK_STATUSES)[number];
 
-export const TASK_FIELD_LIMITS = { title: 300, notes: 10_000, dependencies: 50 } as const;
+export const TASK_FIELD_LIMITS = {
+  title: 300,
+  notes: 10_000,
+  dependencies: 50,
+} as const;
 const MAX_TASKS = 500;
 
 export interface Task {
@@ -14,7 +23,9 @@ export interface Task {
   updatedAt: string;
 }
 
-type TaskInput = Partial<Pick<Task, "title" | "status" | "dependencies" | "notes">>;
+type TaskInput = Partial<
+  Pick<Task, "title" | "status" | "dependencies" | "notes">
+>;
 
 export class TaskManager {
   private readonly tasks = new Map<string, Task>();
@@ -44,9 +55,10 @@ export class TaskManager {
       ...current,
       title: input.title ?? current.title,
       status: input.status ?? current.status,
-      dependencies: input.dependencies === undefined
-        ? current.dependencies
-        : this.validateDependencies(id, input.dependencies),
+      dependencies:
+        input.dependencies === undefined
+          ? current.dependencies
+          : this.validateDependencies(id, input.dependencies),
       notes: input.notes ?? current.notes,
       updatedAt: new Date().toISOString(),
     };
@@ -96,12 +108,15 @@ export class PlanMode {
   }
 
   enter(summary = this.state.summary) {
-    this.state = summary === undefined ? { active: true } : { active: true, summary };
+    this.state =
+      summary === undefined ? { active: true } : { active: true, summary };
     return { ...this.state };
   }
 
   exit(summary = this.state.summary) {
     this.state = { active: false };
-    return summary === undefined ? { ...this.state } : { ...this.state, summary };
+    return summary === undefined
+      ? { ...this.state }
+      : { ...this.state, summary };
   }
 }

@@ -1,5 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import { ensureBunVersion, isVersionAtLeast } from "../src/runtime/bun-version.ts";
+import {
+  ensureBunVersion,
+  isVersionAtLeast,
+} from "../src/runtime/bun-version.ts";
 
 describe("bun version guard", () => {
   test("compares semver strings accurately", () => {

@@ -17,7 +17,10 @@ export interface CreateServerOptions {
   onApprovalCodeRotated?: (code: string) => void;
 }
 
-export function createAppServer(config: AppConfig, options: CreateServerOptions = {}): RunningServer {
+export function createAppServer(
+  config: AppConfig,
+  options: CreateServerOptions = {},
+): RunningServer {
   ensureBunVersion("1.4.0");
   const audit = new AuditLogger();
   const oauth = new OAuthServer(config, {
@@ -38,9 +41,15 @@ export function createAppServer(config: AppConfig, options: CreateServerOptions 
 
       if (req.method === "GET" && url.pathname === "/health") {
         res = Response.json({ status: "ok", bun: Bun.version });
-      } else if (req.method === "GET" && url.pathname === "/.well-known/oauth-protected-resource") {
+      } else if (
+        req.method === "GET" &&
+        url.pathname === "/.well-known/oauth-protected-resource"
+      ) {
         res = oauth.handleProtectedResourceMetadata();
-      } else if (req.method === "GET" && url.pathname === "/.well-known/oauth-authorization-server") {
+      } else if (
+        req.method === "GET" &&
+        url.pathname === "/.well-known/oauth-authorization-server"
+      ) {
         res = oauth.handleAuthorizationServerMetadata();
       } else if (url.pathname === "/oauth/authorize" && req.method === "GET") {
         res = await oauth.handleAuthorizeGet(req);
@@ -52,7 +61,9 @@ export function createAppServer(config: AppConfig, options: CreateServerOptions 
         res = await oauth.handleRevoke(req, peerIp);
       } else if (req.method === "POST" && url.pathname === "/mcp") {
         const auth = oauth.authenticateBearer(req, peerIp);
-        res = auth.ok ? await mcp.handleRequest(req, auth.clientId, auth.ip) : auth.response;
+        res = auth.ok
+          ? await mcp.handleRequest(req, auth.clientId, auth.ip)
+          : auth.response;
       } else {
         res = new Response("Not Found", { status: 404 });
       }
@@ -72,6 +83,8 @@ if (import.meta.main) {
       console.log(`Rotated one-time OAuth approval code: ${code}`);
     },
   });
-  console.log(`JustNewMCP listening on http://${server.hostname}:${server.port} (Bun ${bunVersion})`);
+  console.log(
+    `JustNewMCP listening on http://${server.hostname}:${server.port} (Bun ${bunVersion})`,
+  );
   console.log(`One-time OAuth approval code: ${oauth.getApprovalCode()}`);
 }

@@ -34,7 +34,10 @@ export class IpRateLimiter {
     }
   }
 
-  check(ip: string, now = Date.now()): { allowed: boolean; retryAfterSec: number } {
+  check(
+    ip: string,
+    now = Date.now(),
+  ): { allowed: boolean; retryAfterSec: number } {
     const bucket = this.buckets.get(ip);
     if (!bucket) {
       return { allowed: true, retryAfterSec: 0 };
@@ -42,7 +45,10 @@ export class IpRateLimiter {
     if (bucket.lockedUntil > now) {
       return {
         allowed: false,
-        retryAfterSec: Math.max(1, Math.ceil((bucket.lockedUntil - now) / 1000)),
+        retryAfterSec: Math.max(
+          1,
+          Math.ceil((bucket.lockedUntil - now) / 1000),
+        ),
       };
     }
     const staleCutoff = now - Math.max(this.opts.windowMs, this.opts.lockoutMs);
@@ -52,9 +58,16 @@ export class IpRateLimiter {
     return { allowed: true, retryAfterSec: 0 };
   }
 
-  recordFailure(ip: string, now = Date.now()): { locked: boolean; retryAfterSec: number } {
+  recordFailure(
+    ip: string,
+    now = Date.now(),
+  ): { locked: boolean; retryAfterSec: number } {
     this.prune(now);
-    const bucket = this.buckets.get(ip) ?? { failures: [], lockedUntil: 0, lastSeen: now };
+    const bucket = this.buckets.get(ip) ?? {
+      failures: [],
+      lockedUntil: 0,
+      lastSeen: now,
+    };
     const cutoff = now - this.opts.windowMs;
     bucket.failures = bucket.failures.filter((ts) => ts > cutoff);
     bucket.failures.push(now);

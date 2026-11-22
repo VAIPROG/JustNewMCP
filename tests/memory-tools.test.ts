@@ -1,11 +1,25 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  statSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ConfigSchema } from "../src/config.ts";
 import { createAppServer } from "../src/index.ts";
-import { computePkceS256, generateRandomToken } from "../src/security/crypto.ts";
-import { memoryReadTool, memorySearchTool, memoryWriteTool } from "../src/workspace/memory.ts";
+import {
+  computePkceS256,
+  generateRandomToken,
+} from "../src/security/crypto.ts";
+import {
+  memoryReadTool,
+  memorySearchTool,
+  memoryWriteTool,
+} from "../src/workspace/memory.ts";
 
 describe("project memory tools (memory_read, memory_write, memory_search)", () => {
   let baseDir: string;
@@ -50,11 +64,20 @@ describe("project memory tools (memory_read, memory_write, memory_search)", () =
 
     if (process.platform !== "win32") {
       expect(statSync(written.memoryDir).mode & 0o777).toBe(0o700);
-      expect(statSync(join(written.memoryDir, "MEMORY.md")).mode & 0o777).toBe(0o600);
-      expect(statSync(join(written.memoryDir, "how-to-use-user-machine")).mode & 0o777).toBe(0o700);
+      expect(statSync(join(written.memoryDir, "MEMORY.md")).mode & 0o777).toBe(
+        0o600,
+      );
+      expect(
+        statSync(join(written.memoryDir, "how-to-use-user-machine")).mode &
+          0o777,
+      ).toBe(0o700);
     }
 
-    const readIndex = await memoryReadTool(workspaceDir, undefined, { path: "MEMORY.md", offset: 1, limit: 10 });
+    const readIndex = await memoryReadTool(workspaceDir, undefined, {
+      path: "MEMORY.md",
+      offset: 1,
+      limit: 10,
+    });
     expect(readIndex.totalLines).toBe(3);
     expect(readIndex.content).toContain("3 | Bun >= 1.4.0 required.");
 
@@ -62,7 +85,9 @@ describe("project memory tools (memory_read, memory_write, memory_search)", () =
       pattern: "bun test",
       caseInsensitive: true,
     });
-    expect(searchRes.matches).toEqual(["how-to-use-user-machine/INDEX.md:2:Use bun test --check."]);
+    expect(searchRes.matches).toEqual([
+      "how-to-use-user-machine/INDEX.md:2:Use bun test --check.",
+    ]);
   });
 
   test("supports centralized memoryDir/<slug>/ layout", async () => {
@@ -72,25 +97,99 @@ describe("project memory tools (memory_read, memory_write, memory_search)", () =
     });
     expect(res.memoryDir.startsWith(centralMemoryRoot)).toBe(true);
 
-    const readBack = await memoryReadTool(workspaceDir, centralMemoryRoot, { path: "deploy/NOTES.md" });
+    const readBack = await memoryReadTool(workspaceDir, centralMemoryRoot, {
+      path: "deploy/NOTES.md",
+    });
     expect(readBack.content).toContain("Deploy behind Cloudflare Tunnel.");
   });
 
   test("rejects traversal, absolute paths, and symlink escapes inside memory directory", async () => {
-    await expect(memoryReadTool(workspaceDir, undefined, { path: "../secret.md" })).rejects.toThrow("traversal");
-    await expect(memoryWriteTool(workspaceDir, undefined, { path: "/tmp/evil.md", content: "x" })).rejects.toThrow(
-      "relative path",
-    );
+    await expect(
+      memoryReadTool(workspaceDir, undefined, { path: "../secret.md" }),
+    ).rejects.toThrow("traversal");
+    await expect(
+      memoryWriteTool(workspaceDir, undefined, {
+        path: "/tmp/evil.md",
+        content: "x",
+      }),
+    ).rejects.toThrow("relative path");
 
     const memDir = join(workspaceDir, ".justnewmcp", "memory");
     symlinkSync(join(outsideDir, "secret.md"), join(memDir, "linked.md"));
-    await expect(memoryReadTool(workspaceDir, undefined, { path: "linked.md" })).rejects.toThrow("symlink");
-    await expect(memoryWriteTool(workspaceDir, undefined, { path: "linked.md", content: "pwn" })).rejects.toThrow(
-      "symlink",
-    );
+    await expect(
+      memoryReadTool(workspaceDir, undefined, { path: "linked.md" }),
+    ).rejects.toThrow("symlink");
+    await expect(
+      memoryWriteTool(workspaceDir, undefined, {
+        path: "linked.md",
+        content: "pwn",
+      }),
+    ).rejects.toThrow("symlink");
 
-    const search = await memorySearchTool(workspaceDir, undefined, { pattern: "OUTSIDE_SECRET" });
+    const search = await memorySearchTool(workspaceDir, undefined, {
+      pattern: "OUTSIDE_SECRET",
+    });
     expect(search.matches).toEqual([]);
+
+    // Reject symlinked ancestor topic directory on write
+    symlinkSync(outsideDir, join(memDir, "linked-dir"));
+    await expect(
+      memoryWriteTool(workspaceDir, undefined, {
+        path: "linked-dir/escape.md",
+        content: "nope",
+      }),
+    ).rejects.toThrow("symlink");
+  });
+
+  test("enforces deniedPathPatterns across memory_read, memory_write, and memory_search", async () => {
+    const denied = ["*.key", "*.pem", "secret-topic/**"];
+    await expect(
+      memoryWriteTool(workspaceDir, undefined, {
+        path: "certs/private.key",
+        content: "KEY",
+        deniedPatterns: denied,
+      }),
+    ).rejects.toThrow("blocked by security policy");
+
+    const memDir = join(workspaceDir, ".justnewmcp", "memory");
+    writeFileSync(join(memDir, "existing.pem"), "PEM_SECRET_MARKER\n", "utf8");
+    await expect(
+      memoryReadTool(workspaceDir, undefined, {
+        path: "existing.pem",
+        deniedPatterns: denied,
+      }),
+    ).rejects.toThrow("blocked by security policy");
+
+    const search = await memorySearchTool(workspaceDir, undefined, {
+      pattern: "PEM_SECRET_MARKER",
+      deniedPatterns: denied,
+    });
+    expect(search.matches).toEqual([]);
+  });
+
+  test("serializes concurrent memory_write appends to the same file without losing writes", async () => {
+    await memoryWriteTool(workspaceDir, undefined, {
+      path: "concurrent.md",
+      content: "header\n",
+      mode: "overwrite",
+    });
+    await Promise.all(
+      Array.from({ length: 10 }, (_, idx) =>
+        memoryWriteTool(workspaceDir, undefined, {
+          path: "concurrent.md",
+          content: `entry-${idx}\n`,
+          mode: "append",
+        }),
+      ),
+    );
+    const readBack = await memoryReadTool(workspaceDir, undefined, {
+      path: "concurrent.md",
+      limit: 50,
+    });
+    expect(readBack.totalLines).toBe(11);
+    for (let idx = 0; idx < 10; idx += 1) {
+      expect(readBack.content).toContain(`entry-${idx}`);
+    }
   });
 
   test("MCP /mcp enforces plan mode blocking on memory_write while allowing memory_read and memory_search", async () => {
@@ -115,11 +214,17 @@ describe("project memory tools (memory_read, memory_write, memory_search)", () =
       const formRes = await fetch(
         `${baseUrl}/oauth/authorize?response_type=code&client_id=${clientId}&redirect_uri=${encodeURIComponent(redirectUri)}&code_challenge=${challenge}&code_challenge_method=S256`,
       );
-      const csrfToken = (await formRes.text()).match(/name="csrf_token"\s+value="([^"]+)"/)?.[1] ?? "";
+      const csrfToken =
+        (await formRes.text()).match(
+          /name="csrf_token"\s+value="([^"]+)"/,
+        )?.[1] ?? "";
       const cookie = formRes.headers.get("set-cookie")?.split(";")[0] ?? "";
       const approveRes = await fetch(`${baseUrl}/oauth/authorize`, {
         method: "POST",
-        headers: { "Content-Type": "application/x-www-form-urlencoded", Cookie: cookie },
+        headers: {
+          "Content-Type": "application/x-www-form-urlencoded",
+          Cookie: cookie,
+        },
         body: new URLSearchParams({
           csrf_token: csrfToken,
           client_id: clientId,
@@ -129,7 +234,10 @@ describe("project memory tools (memory_read, memory_write, memory_search)", () =
         }),
         redirect: "manual",
       });
-      const code = new URL(approveRes.headers.get("location") ?? "").searchParams.get("code") ?? "";
+      const code =
+        new URL(approveRes.headers.get("location") ?? "").searchParams.get(
+          "code",
+        ) ?? "";
       const tokRes = await fetch(`${baseUrl}/oauth/token`, {
         method: "POST",
         body: new URLSearchParams({
@@ -141,33 +249,68 @@ describe("project memory tools (memory_read, memory_write, memory_search)", () =
           code_verifier: verifier,
         }),
       });
-      const { access_token } = (await tokRes.json()) as { access_token: string };
+      const { access_token } = (await tokRes.json()) as {
+        access_token: string;
+      };
 
       const call = async (name: string, args: Record<string, unknown> = {}) => {
         const res = await fetch(`${baseUrl}/mcp`, {
           method: "POST",
-          headers: { "Content-Type": "application/json", Authorization: `Bearer ${access_token}` },
-          body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name, arguments: args } }),
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${access_token}`,
+          },
+          body: JSON.stringify({
+            jsonrpc: "2.0",
+            id: 1,
+            method: "tools/call",
+            params: { name, arguments: args },
+          }),
         });
-        return ((await res.json()) as { result: { isError?: boolean; content: Array<{ text: string }> } }).result;
+        return (
+          (await res.json()) as {
+            result: { isError?: boolean; content: Array<{ text: string }> };
+          }
+        ).result;
       };
 
-      expect((await call("workspace_init", { path: workspaceDir })).isError).toBeUndefined();
-      expect((await call("plan_enter", { summary: "Check memory" })).isError).toBeUndefined();
+      expect(
+        (await call("workspace_init", { path: workspaceDir })).isError,
+      ).toBeUndefined();
+      expect(
+        (await call("plan_enter", { summary: "Check memory" })).isError,
+      ).toBeUndefined();
 
       // memory_write must be blocked in plan mode, while memory_read and memory_search succeed
-      const blockedWrite = await call("memory_write", { path: "plan.md", content: "blocked" });
+      const blockedWrite = await call("memory_write", {
+        path: "plan.md",
+        content: "blocked",
+      });
       expect(blockedWrite.isError).toBe(true);
       expect(blockedWrite.content[0]?.text).toContain("Plan mode is active");
 
       const allowedRead = await call("memory_read", { path: "MEMORY.md" });
       expect(allowedRead.isError).toBeUndefined();
-      const allowedSearch = await call("memory_search", { pattern: "Project Memory" });
+      const allowedSearch = await call("memory_search", {
+        pattern: "Project Memory",
+      });
       expect(allowedSearch.isError).toBeUndefined();
 
       expect((await call("plan_exit")).isError).toBeUndefined();
-      const okWrite = await call("memory_write", { path: "notes.md", content: "Allowed after plan_exit\n" });
+      const okWrite = await call("memory_write", {
+        path: "notes.md",
+        content: "Allowed after plan_exit\n",
+      });
       expect(okWrite.isError).toBeUndefined();
+
+      const deniedWrite = await call("memory_write", {
+        path: "secret.key",
+        content: "denied",
+      });
+      expect(deniedWrite.isError).toBe(true);
+      expect(deniedWrite.content[0]?.text).toContain(
+        "blocked by security policy",
+      );
     } finally {
       running.server.stop(true);
     }

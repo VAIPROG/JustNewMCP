@@ -4,7 +4,10 @@ import { AuditLogger } from "../security/audit.ts";
 import { readBodyWithinLimit } from "../security/headers.ts";
 import { listCheckpoints, rewindCheckpoint } from "../workspace/checkpoints.ts";
 import { runAllowedCmdTool } from "../workspace/cmd-runner.ts";
-import { readAvailableEnvsTool, setEnvVarTool } from "../workspace/env-tools.ts";
+import {
+  readAvailableEnvsTool,
+  setEnvVarTool,
+} from "../workspace/env-tools.ts";
 import {
   applyEditsTool,
   globFilesTool,
@@ -13,9 +16,18 @@ import {
   writeFileTool,
 } from "../workspace/fs-tools.ts";
 import { initializeWorkspace, type WorkspaceState } from "../workspace/init.ts";
-import { memoryReadTool, memorySearchTool, memoryWriteTool } from "../workspace/memory.ts";
+import {
+  memoryReadTool,
+  memorySearchTool,
+  memoryWriteTool,
+} from "../workspace/memory.ts";
 import { assertWorkspaceAnchored } from "../workspace/paths.ts";
-import { PlanMode, TASK_FIELD_LIMITS, TASK_STATUSES, TaskManager } from "../workspace/tasks.ts";
+import {
+  PlanMode,
+  TASK_FIELD_LIMITS,
+  TASK_STATUSES,
+  TaskManager,
+} from "../workspace/tasks.ts";
 
 interface JsonRpcRequest {
   jsonrpc: "2.0";
@@ -102,7 +114,10 @@ const TaskIdArgs = z.object({ id: z.string().min(1) });
 const TaskCreateArgs = z.object({
   title: z.string().trim().min(1).max(TASK_FIELD_LIMITS.title),
   status: z.enum(TASK_STATUSES).optional(),
-  dependencies: z.array(z.string().min(1)).max(TASK_FIELD_LIMITS.dependencies).optional(),
+  dependencies: z
+    .array(z.string().min(1))
+    .max(TASK_FIELD_LIMITS.dependencies)
+    .optional(),
   notes: z.string().max(TASK_FIELD_LIMITS.notes).optional(),
 });
 const TaskUpdateArgs = TaskCreateArgs.partial().merge(TaskIdArgs);
@@ -158,14 +173,18 @@ const TOOL_DEFINITIONS = [
     inputSchema: {
       type: "object",
       properties: {
-        path: { type: "string", description: "Directory path inside an allowed root" },
+        path: {
+          type: "string",
+          description: "Directory path inside an allowed root",
+        },
       },
       required: ["path"],
     },
   },
   {
     name: "workspace_info",
-    description: "Return the active workspace directory, configured allowed roots, and denied path patterns.",
+    description:
+      "Return the active workspace directory, configured allowed roots, and denied path patterns.",
     inputSchema: { type: "object", properties: {} },
   },
   {
@@ -191,7 +210,10 @@ const TOOL_DEFINITIONS = [
     inputSchema: {
       type: "object",
       properties: {
-        path: { type: "string", description: "Relative path to .env file (default: .env)" },
+        path: {
+          type: "string",
+          description: "Relative path to .env file (default: .env)",
+        },
       },
     },
   },
@@ -202,7 +224,10 @@ const TOOL_DEFINITIONS = [
     inputSchema: {
       type: "object",
       properties: {
-        path: { type: "string", description: "Relative path to .env file (default: .env)" },
+        path: {
+          type: "string",
+          description: "Relative path to .env file (default: .env)",
+        },
         key: { type: "string" },
         value: { type: "string" },
         action: { type: "string", enum: ["set", "delete"] },
@@ -264,7 +289,8 @@ const TOOL_DEFINITIONS = [
   },
   {
     name: "glob_files",
-    description: "Find files matching a glob pattern inside the active workspace, sorted by modification time.",
+    description:
+      "Find files matching a glob pattern inside the active workspace, sorted by modification time.",
     inputSchema: {
       type: "object",
       properties: {
@@ -276,7 +302,8 @@ const TOOL_DEFINITIONS = [
   },
   {
     name: "grep_files",
-    description: "Search UTF-8 files in the active workspace with a regular expression.",
+    description:
+      "Search UTF-8 files in the active workspace with a regular expression.",
     inputSchema: {
       type: "object",
       properties: {
@@ -284,7 +311,10 @@ const TOOL_DEFINITIONS = [
         glob: { type: "string" },
         case_insensitive: { type: "boolean" },
         context_lines: { type: "integer", minimum: 0, maximum: 5 },
-        mode: { type: "string", enum: ["files_with_matches", "content", "count"] },
+        mode: {
+          type: "string",
+          enum: ["files_with_matches", "content", "count"],
+        },
         max_matches: { type: "integer", minimum: 1, maximum: 500 },
       },
       required: ["pattern"],
@@ -302,7 +332,8 @@ const TOOL_DEFINITIONS = [
   },
   {
     name: "checkpoint_rewind",
-    description: "Restore a file (or remove a newly created file) from a local checkpoint ID.",
+    description:
+      "Restore a file (or remove a newly created file) from a local checkpoint ID.",
     inputSchema: {
       type: "object",
       properties: {
@@ -328,11 +359,16 @@ const TOOL_DEFINITIONS = [
   {
     name: "task_create",
     description: "Create a server-side task. Status defaults to pending.",
-    inputSchema: { type: "object", properties: TASK_PROPERTIES, required: ["title"] },
+    inputSchema: {
+      type: "object",
+      properties: TASK_PROPERTIES,
+      required: ["title"],
+    },
   },
   {
     name: "task_update",
-    description: "Update the supplied fields of a task. A supplied dependency list replaces the existing list.",
+    description:
+      "Update the supplied fields of a task. A supplied dependency list replaces the existing list.",
     inputSchema: {
       type: "object",
       properties: { id: { type: "string" }, ...TASK_PROPERTIES },
@@ -347,25 +383,36 @@ const TOOL_DEFINITIONS = [
   {
     name: "task_get",
     description: "Get a task by ID.",
-    inputSchema: { type: "object", properties: { id: { type: "string" } }, required: ["id"] },
+    inputSchema: {
+      type: "object",
+      properties: { id: { type: "string" } },
+      required: ["id"],
+    },
   },
   {
     name: "plan_enter",
-    description: "Enter read-only workspace mode, optionally recording a plan summary.",
+    description:
+      "Enter read-only workspace mode, optionally recording a plan summary.",
     inputSchema: { type: "object", properties: PLAN_PROPERTIES },
   },
   {
     name: "plan_exit",
-    description: "Exit read-only workspace mode and return the plan summary, with an optional replacement.",
+    description:
+      "Exit read-only workspace mode and return the plan summary, with an optional replacement.",
     inputSchema: { type: "object", properties: PLAN_PROPERTIES },
   },
   {
     name: "memory_read",
-    description: "Read MEMORY.md or a nested topic file inside the active project's memory directory.",
+    description:
+      "Read MEMORY.md or a nested topic file inside the active project's memory directory.",
     inputSchema: {
       type: "object",
       properties: {
-        path: { type: "string", description: "Relative path inside project memory (default: MEMORY.md)" },
+        path: {
+          type: "string",
+          description:
+            "Relative path inside project memory (default: MEMORY.md)",
+        },
         offset: { type: "integer", minimum: 1 },
         limit: { type: "integer", minimum: 1, maximum: 2000 },
       },
@@ -373,11 +420,16 @@ const TOOL_DEFINITIONS = [
   },
   {
     name: "memory_write",
-    description: "Create, overwrite, or append to MEMORY.md or a topic file inside the active project's memory directory.",
+    description:
+      "Create, overwrite, or append to MEMORY.md or a topic file inside the active project's memory directory.",
     inputSchema: {
       type: "object",
       properties: {
-        path: { type: "string", description: "Relative path inside project memory (default: MEMORY.md)" },
+        path: {
+          type: "string",
+          description:
+            "Relative path inside project memory (default: MEMORY.md)",
+        },
         content: { type: "string" },
         mode: { type: "string", enum: ["overwrite", "append"] },
       },
@@ -386,7 +438,8 @@ const TOOL_DEFINITIONS = [
   },
   {
     name: "memory_search",
-    description: "Search Markdown files inside the active project's memory directory by regular expression.",
+    description:
+      "Search Markdown files inside the active project's memory directory by regular expression.",
     inputSchema: {
       type: "object",
       properties: {
@@ -418,14 +471,28 @@ export class McpRouter {
     if (!this.workspaceState.activeRoot) {
       throw new Error("No active workspace. Call workspace_init first.");
     }
-    return assertWorkspaceAnchored(this.workspaceState.activeRoot, this.config.allowedRoots);
+    return assertWorkspaceAnchored(
+      this.workspaceState.activeRoot,
+      this.config.allowedRoots,
+    );
   }
 
-  async handleRequest(req: Request, clientId: string, ip: string): Promise<Response> {
+  async handleRequest(
+    req: Request,
+    clientId: string,
+    ip: string,
+  ): Promise<Response> {
     const contentType = req.headers.get("content-type") ?? "";
     if (!contentType.toLowerCase().includes("application/json")) {
       return Response.json(
-        { jsonrpc: "2.0", id: null, error: { code: -32600, message: "Content-Type must be application/json" } },
+        {
+          jsonrpc: "2.0",
+          id: null,
+          error: {
+            code: -32600,
+            message: "Content-Type must be application/json",
+          },
+        },
         { status: 415 },
       );
     }
@@ -438,7 +505,11 @@ export class McpRouter {
       payload = JSON.parse(bodyRes.text) as JsonRpcRequest;
     } catch {
       return Response.json(
-        { jsonrpc: "2.0", id: null, error: { code: -32700, message: "Parse error" } },
+        {
+          jsonrpc: "2.0",
+          id: null,
+          error: { code: -32700, message: "Parse error" },
+        },
         { status: 400 },
       );
     }
@@ -484,7 +555,9 @@ export class McpRouter {
       try {
         if (changesWorkspace) {
           if (this.plan.active) {
-            throw new Error(`Plan mode is active (read-only). Call plan_exit before using ${name}.`);
+            throw new Error(
+              `Plan mode is active (read-only). Call plan_exit before using ${name}.`,
+            );
           }
           this.activeWorkspaceMutations++;
           mutationStarted = true;
@@ -507,7 +580,10 @@ export class McpRouter {
         });
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
-        this.audit.record("mcp.tool.denied", ip, { clientId, detail: `${name}: ${message}` });
+        this.audit.record("mcp.tool.denied", ip, {
+          clientId,
+          detail: `${name}: ${message}`,
+        });
         return Response.json({
           jsonrpc: "2.0",
           id,
@@ -553,28 +629,37 @@ export class McpRouter {
 
     if (name === "plan_enter") {
       if (this.activeWorkspaceMutations > 0) {
-        throw new Error("Cannot enter plan mode while a workspace mutation is in progress. Try again when it finishes.");
+        throw new Error(
+          "Cannot enter plan mode while a workspace mutation is in progress. Try again when it finishes.",
+        );
       }
       const wasActive = this.plan.active;
       const result = this.plan.enter(PlanArgs.parse(args).summary);
-      if (!wasActive) this.audit.record("mcp.plan.entered", ip, { clientId, detail: name });
+      if (!wasActive)
+        this.audit.record("mcp.plan.entered", ip, { clientId, detail: name });
       return result;
     }
 
     if (name === "plan_exit") {
       const wasActive = this.plan.active;
       const result = this.plan.exit(PlanArgs.parse(args).summary);
-      if (wasActive) this.audit.record("mcp.plan.exited", ip, { clientId, detail: name });
+      if (wasActive)
+        this.audit.record("mcp.plan.exited", ip, { clientId, detail: name });
       return result;
     }
 
     if (name === "workspace_init") {
       const parsed = WorkspaceInitArgs.parse(args);
       this.readTracker.clear();
-      return initializeWorkspace(parsed.path, this.config.allowedRoots, this.workspaceState, {
-        deniedPatterns: this.config.deniedPathPatterns,
-        memoryDir: this.config.memoryDir,
-      });
+      return initializeWorkspace(
+        parsed.path,
+        this.config.allowedRoots,
+        this.workspaceState,
+        {
+          deniedPatterns: this.config.deniedPathPatterns,
+          memoryDir: this.config.memoryDir,
+        },
+      );
     }
 
     if (name === "workspace_info") {
@@ -616,7 +701,11 @@ export class McpRouter {
     if (name === "read_available_envs") {
       const root = this.requireActiveWorkspace();
       const parsed = ReadAvailableEnvsArgs.parse(args);
-      return readAvailableEnvsTool(root, this.config.deniedPathPatterns, parsed.path);
+      return readAvailableEnvsTool(
+        root,
+        this.config.deniedPathPatterns,
+        parsed.path,
+      );
     }
 
     if (name === "set_env_var") {
@@ -628,31 +717,54 @@ export class McpRouter {
     if (name === "edit_file") {
       const root = this.requireActiveWorkspace();
       const parsed = EditFileArgs.parse(args);
-      return applyEditsTool(root, this.config.deniedPathPatterns, this.readTracker, parsed.path, [
-        {
-          old_string: parsed.old_string,
-          new_string: parsed.new_string,
-          replace_all: parsed.replace_all,
-        },
-      ]);
+      return applyEditsTool(
+        root,
+        this.config.deniedPathPatterns,
+        this.readTracker,
+        parsed.path,
+        [
+          {
+            old_string: parsed.old_string,
+            new_string: parsed.new_string,
+            replace_all: parsed.replace_all,
+          },
+        ],
+      );
     }
 
     if (name === "multi_edit") {
       const root = this.requireActiveWorkspace();
       const parsed = MultiEditArgs.parse(args);
-      return applyEditsTool(root, this.config.deniedPathPatterns, this.readTracker, parsed.path, parsed.edits);
+      return applyEditsTool(
+        root,
+        this.config.deniedPathPatterns,
+        this.readTracker,
+        parsed.path,
+        parsed.edits,
+      );
     }
 
     if (name === "write_file") {
       const root = this.requireActiveWorkspace();
       const parsed = WriteFileArgs.parse(args);
-      return writeFileTool(root, this.config.deniedPathPatterns, this.readTracker, parsed.path, parsed.content);
+      return writeFileTool(
+        root,
+        this.config.deniedPathPatterns,
+        this.readTracker,
+        parsed.path,
+        parsed.content,
+      );
     }
 
     if (name === "glob_files") {
       const root = this.requireActiveWorkspace();
       const parsed = GlobFilesArgs.parse(args);
-      return globFilesTool(root, this.config.deniedPathPatterns, parsed.pattern, parsed.limit);
+      return globFilesTool(
+        root,
+        this.config.deniedPathPatterns,
+        parsed.pattern,
+        parsed.limit,
+      );
     }
 
     if (name === "grep_files") {
@@ -677,7 +789,11 @@ export class McpRouter {
     if (name === "checkpoint_rewind") {
       const root = this.requireActiveWorkspace();
       const parsed = CheckpointRewindArgs.parse(args);
-      return rewindCheckpoint(root, parsed.checkpoint_id, this.config.deniedPathPatterns);
+      return rewindCheckpoint(
+        root,
+        parsed.checkpoint_id,
+        this.config.deniedPathPatterns,
+      );
     }
 
     if (name === "run_allowed_cmd") {
@@ -693,13 +809,19 @@ export class McpRouter {
     if (name === "memory_read") {
       const root = this.requireActiveWorkspace();
       const parsed = MemoryReadArgs.parse(args);
-      return memoryReadTool(root, this.config.memoryDir, parsed);
+      return memoryReadTool(root, this.config.memoryDir, {
+        ...parsed,
+        deniedPatterns: this.config.deniedPathPatterns,
+      });
     }
 
     if (name === "memory_write") {
       const root = this.requireActiveWorkspace();
       const parsed = MemoryWriteArgs.parse(args);
-      return memoryWriteTool(root, this.config.memoryDir, parsed);
+      return memoryWriteTool(root, this.config.memoryDir, {
+        ...parsed,
+        deniedPatterns: this.config.deniedPathPatterns,
+      });
     }
 
     if (name === "memory_search") {
@@ -709,6 +831,7 @@ export class McpRouter {
         pattern: parsed.pattern,
         caseInsensitive: parsed.case_insensitive,
         maxMatches: parsed.max_matches,
+        deniedPatterns: this.config.deniedPathPatterns,
       });
     }
 

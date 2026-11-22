@@ -1,0 +1,23 @@
+version: 2
+updates:
+  # Use the Bun updater for package.json and bun.lock. Disable npm version PRs
+  # so the two updaters do not compete over the same manifest.
+  - package-ecosystem: npm
+    directory: "/"
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    open-pull-requests-limit: 0
+  - package-ecosystem: bun
+    directory: "/"
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
