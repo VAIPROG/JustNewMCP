@@ -219,9 +219,11 @@ export interface ToolSearchResult {
   tools: McpToolDefinition[];
 }
 
+const MAX_TRACKED_SESSIONS = 200;
+
 export class ToolRegistry {
   private readonly entries = new Map<string, ToolCatalogEntry>();
-  private readonly activated = new Set<string>();
+  private readonly sessions = new Map<string, Set<string>>();
 
   constructor(
     definitions: readonly McpToolDefinition[],
@@ -242,10 +244,30 @@ export class ToolRegistry {
     }
   }
 
-  listVisibleTools(): McpToolDefinition[] {
+  private getActivatedSet(sessionKey: string, create = false): Set<string> {
+    const existing = this.sessions.get(sessionKey);
+    if (existing) {
+      // Refresh insertion order for LRU eviction
+      this.sessions.delete(sessionKey);
+      this.sessions.set(sessionKey, existing);
+      return existing;
+    }
+    if (!create) return new Set<string>();
+    const created = new Set<string>();
+    this.sessions.set(sessionKey, created);
+    while (this.sessions.size > MAX_TRACKED_SESSIONS) {
+      const oldest = this.sessions.keys().next().value;
+      if (oldest === undefined) break;
+      this.sessions.delete(oldest);
+    }
+    return created;
+  }
+
+  listVisibleTools(sessionKey = "default"): McpToolDefinition[] {
     if (!this.deferredMode) {
       return Array.from(this.entries.values(), (e) => e.definition);
     }
+    const activated = this.getActivatedSet(sessionKey);
     const visible: McpToolDefinition[] = [];
     for (const entry of this.entries.values()) {
       if (!entry.deferred) {
@@ -253,7 +275,7 @@ export class ToolRegistry {
       }
     }
     visible.push(TOOL_SEARCH_DEFINITION);
-    for (const name of this.activated) {
+    for (const name of activated) {
       const entry = this.entries.get(name);
       if (entry?.deferred) {
         visible.push(entry.definition);
@@ -262,19 +284,21 @@ export class ToolRegistry {
     return visible;
   }
 
-  isToolActive(name: string): boolean {
+  isToolActive(name: string, sessionKey = "default"): boolean {
     if (name === TOOL_SEARCH_DEFINITION.name) return true;
     const entry = this.entries.get(name);
     if (!entry) return false;
     if (!this.deferredMode || !entry.deferred) return true;
-    return this.activated.has(name);
+    return this.getActivatedSet(sessionKey).has(name);
   }
 
   isKnownDeferredTool(name: string): boolean {
     return this.entries.get(name)?.deferred === true;
   }
 
-  private summarizeModules(): ToolSearchResult["availableModules"] {
+  private summarizeModules(
+    activated: Set<string>,
+  ): ToolSearchResult["availableModules"] {
     const counts = new Map<
       ToolModuleName,
       { totalTools: number; activeTools: number }
@@ -286,7 +310,7 @@ export class ToolRegistry {
         activeTools: 0,
       };
       cur.totalTools += 1;
-      if (!this.deferredMode || this.activated.has(entry.definition.name)) {
+      if (!this.deferredMode || activated.has(entry.definition.name)) {
         cur.activeTools += 1;
       }
       counts.set(entry.module, cur);
@@ -297,21 +321,25 @@ export class ToolRegistry {
     }));
   }
 
-  search(opts: {
-    query?: string;
-    module?: string;
-    limit?: number;
-  }): ToolSearchResult {
+  search(
+    opts: {
+      query?: string;
+      module?: string;
+      limit?: number;
+    },
+    sessionKey = "default",
+  ): ToolSearchResult {
     const limit = Math.max(1, Math.min(opts.limit ?? 10, 30));
     const query = opts.query?.trim();
     const moduleFilter = opts.module?.trim().toLowerCase();
+    const activated = this.getActivatedSet(sessionKey, this.deferredMode);
 
     if (!query && !moduleFilter) {
       return {
         deferredMode: this.deferredMode,
         newlyActivated: [],
-        activeDeferredTools: [...this.activated],
-        availableModules: this.summarizeModules(),
+        activeDeferredTools: [...activated],
+        availableModules: this.summarizeModules(activated),
         tools: [],
       };
     }
@@ -369,8 +397,8 @@ export class ToolRegistry {
     const newlyActivated: string[] = [];
     if (this.deferredMode) {
       for (const entry of limited) {
-        if (entry.deferred && !this.activated.has(entry.definition.name)) {
-          this.activated.add(entry.definition.name);
+        if (entry.deferred && !activated.has(entry.definition.name)) {
+          activated.add(entry.definition.name);
           newlyActivated.push(entry.definition.name);
         }
       }
@@ -381,8 +409,8 @@ export class ToolRegistry {
       ...(query ? { query } : {}),
       ...(moduleFilter ? { module: moduleFilter } : {}),
       newlyActivated,
-      activeDeferredTools: [...this.activated],
-      availableModules: this.summarizeModules(),
+      activeDeferredTools: [...activated],
+      availableModules: this.summarizeModules(activated),
       tools: limited.map((e) => e.definition),
     };
   }

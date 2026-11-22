@@ -57,29 +57,47 @@ async function authorizedClient(
   });
   const { access_token } = (await tokRes.json()) as { access_token: string };
 
-  const rpc = async (method: string, params?: Record<string, unknown>) => {
+  const rpc = async (
+    method: string,
+    params?: Record<string, unknown>,
+    sessionId?: string,
+  ) => {
     const res = await fetch(`${baseUrl}/mcp`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
         Authorization: `Bearer ${access_token}`,
+        ...(sessionId ? { "Mcp-Session-Id": sessionId } : {}),
       },
       body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
     });
-    return (await res.json()) as {
-      result?: {
-        tools?: Array<{ name: string }>;
-        isError?: boolean;
-        content?: Array<{ text: string }>;
-      };
+    return {
+      sessionId: res.headers.get("mcp-session-id") ?? undefined,
+      body: (await res.json()) as {
+        result?: {
+          capabilities?: { tools?: { listChanged?: boolean } };
+          tools?: Array<{ name: string }>;
+          isError?: boolean;
+          content?: Array<{ text: string }>;
+        };
+      },
     };
   };
 
   return {
-    listTools: async () =>
-      (await rpc("tools/list")).result?.tools?.map((t) => t.name) ?? [],
-    call: async (name: string, args: Record<string, unknown> = {}) =>
-      (await rpc("tools/call", { name, arguments: args })).result!,
+    accessToken: access_token,
+    initialize: () => rpc("initialize"),
+    listTools: async (sessionId?: string) =>
+      (await rpc("tools/list", undefined, sessionId)).body.result?.tools?.map(
+        (t) => t.name,
+      ) ?? [],
+    call: async (
+      name: string,
+      args: Record<string, unknown> = {},
+      sessionId?: string,
+    ) =>
+      (await rpc("tools/call", { name, arguments: args }, sessionId)).body
+        .result!,
   };
 }
 
@@ -124,8 +142,16 @@ describe("on-demand tool_search and deferred tool activation", () => {
         approvalCode,
       );
 
+      // initialize advertises listChanged: true and issues distinct Mcp-Session-Id headers
+      const initA = await client.initialize();
+      const initB = await client.initialize();
+      expect(initA.body.result?.capabilities?.tools?.listChanged).toBe(true);
+      expect(initA.sessionId).toBeTruthy();
+      expect(initB.sessionId).toBeTruthy();
+      expect(initA.sessionId).not.toBe(initB.sessionId);
+
       // Initial tools/list contains only core tools + tool_search
-      const initialTools = await client.listTools();
+      const initialTools = await client.listTools(initA.sessionId);
       expect(initialTools).toContain("workspace_init");
       expect(initialTools).toContain("read_file");
       expect(initialTools).toContain("run_allowed_cmd");
@@ -180,6 +206,43 @@ describe("on-demand tool_search and deferred tool activation", () => {
       const afterTasksTools = await client.listTools();
       expect(afterTasksTools).toContain("task_create");
       expect(afterTasksTools).toContain("plan_enter");
+
+      // Session isolation: Session A and Session B do not leak activations to each other
+      const sseRes = await fetch(
+        `http://127.0.0.1:${running.server.port}/mcp`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Accept: "application/json, text/event-stream",
+            Authorization: `Bearer ${client.accessToken}`,
+            "Mcp-Session-Id": initA.sessionId!,
+          },
+          body: JSON.stringify({
+            jsonrpc: "2.0",
+            id: 99,
+            method: "tools/call",
+            params: { name: "tool_search", arguments: { module: "worktree" } },
+          }),
+        },
+      );
+      expect(sseRes.headers.get("content-type")).toContain("text/event-stream");
+      const sseText = await sseRes.text();
+      expect(sseText).toContain("notifications/tools/list_changed");
+      expect(sseText).toContain("worktree_enter");
+      expect(await client.listTools(initA.sessionId)).toContain(
+        "worktree_enter",
+      );
+      expect(await client.listTools(initB.sessionId)).not.toContain(
+        "worktree_enter",
+      );
+      const blockedInB = await client.call(
+        "worktree_enter",
+        {},
+        initB.sessionId,
+      );
+      expect(blockedInB.isError).toBe(true);
+      expect(blockedInB.content?.[0]?.text).toContain("tool_search");
 
       const createdTask = await client.call("task_create", {
         title: "After activation",
