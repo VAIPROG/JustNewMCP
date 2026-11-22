@@ -1,7 +1,6 @@
 import {
   closeSync,
   constants,
-  existsSync,
   fchmodSync,
   mkdirSync,
   openSync,
@@ -312,14 +311,17 @@ export async function setEnvVarTool(
   );
   mkdirSync(dirname(targetPath), { recursive: true });
 
-  const existing = existsSync(targetPath)
-    ? await Bun.file(targetPath).text()
-    : "";
-  const entries = parseEnvEntries(existing);
+  let existing: string | null = null;
+  try {
+    existing = await Bun.file(targetPath).text();
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+  }
+  const entries = parseEnvEntries(existing ?? "");
   const matches = entries.filter((e) => e.key === opts.key);
   const actionMode = opts.action ?? "set";
 
-  let updatedText = existing;
+  let updatedText = existing ?? "";
   let resultAction: "created" | "updated" | "deleted";
 
   if (actionMode === "delete") {
@@ -359,14 +361,13 @@ export async function setEnvVarTool(
     }
   }
 
-  const existedBefore = existsSync(targetPath);
   const cp = await createCheckpoint(
     workspaceRoot,
     targetPath,
     `set_env_var:${opts.key}`,
   );
   if (
-    !existedBefore &&
+    existing === null &&
     isEnvSecretPath(targetPath) &&
     process.platform !== "win32"
   ) {
