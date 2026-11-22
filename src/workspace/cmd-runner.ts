@@ -8,6 +8,10 @@ import {
 import { join, relative, resolve } from "node:path";
 import type { AllowedCommandRule } from "../config.ts";
 import { generateRandomToken } from "../security/crypto.ts";
+import type {
+  BackgroundJobManager,
+  BackgroundJobStart,
+} from "./background-jobs.ts";
 import { isPathInsideRoot } from "./paths.ts";
 
 const LOGS_REL_DIR = join(".justnewmcp", "logs");
@@ -18,6 +22,7 @@ export interface RunAllowedCmdInput {
   command: string;
   args?: string[];
   timeoutMs?: number;
+  background?: boolean;
 }
 
 export interface RunAllowedCmdResult {
@@ -188,11 +193,23 @@ async function readStreamBounded(
   return { text: new TextDecoder("utf-8").decode(merged), hitHardCap };
 }
 
+export function runAllowedCmdTool(
+  workspaceRoot: string,
+  rules: AllowedCommandRule[],
+  input: RunAllowedCmdInput & { background?: false },
+): Promise<RunAllowedCmdResult>;
+export function runAllowedCmdTool(
+  workspaceRoot: string,
+  rules: AllowedCommandRule[],
+  input: RunAllowedCmdInput,
+  jobs: BackgroundJobManager,
+): Promise<RunAllowedCmdResult | BackgroundJobStart>;
 export async function runAllowedCmdTool(
   workspaceRoot: string,
   rules: AllowedCommandRule[],
   input: RunAllowedCmdInput,
-): Promise<RunAllowedCmdResult> {
+  jobs?: BackgroundJobManager,
+): Promise<RunAllowedCmdResult | BackgroundJobStart> {
   const args = input.args ?? [];
   for (const arg of args) {
     if (arg.includes("\0")) {
@@ -203,12 +220,20 @@ export async function runAllowedCmdTool(
   const rule = matchCommandRule(input.command, args, rules);
   const timeoutMs = Math.min(input.timeoutMs ?? rule.timeoutMs, rule.timeoutMs);
 
-  const proc = Bun.spawn([rule.command, ...args], {
-    cwd: workspaceRoot,
-    stdout: "pipe",
-    stderr: "pipe",
-    env: buildSanitizedEnv(),
-  });
+  const spawn = () =>
+    Bun.spawn([rule.command, ...args], {
+      cwd: workspaceRoot,
+      stdin: "ignore",
+      stdout: "pipe",
+      stderr: "pipe",
+      env: buildSanitizedEnv(),
+      detached: input.background === true && process.platform !== "win32",
+    });
+  if (input.background) {
+    if (!jobs) throw new Error("Background execution requires a job manager.");
+    return jobs.start(workspaceRoot, rule.command, args, timeoutMs, spawn);
+  }
+  const proc = spawn();
 
   let timedOut = false;
   const abortController = new AbortController();
