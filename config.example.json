@@ -41,12 +41,15 @@
       "https://gemini.google.com/",
       "https://aistudio.google.com/",
       "https://oauth-redirect.googleusercontent.com/",
+      "https://chatgpt.com/",
+      "https://platform.openai.com/",
       "http://127.0.0.1",
       "http://localhost"
     ],
     "accessTokenTtlSec": 3600,
     "refreshTokenTtlSec": 604800,
     "authCodeTtlSec": 300,
+    "inMemoryTokens": false,
     "rateLimit": {
       "maxFailures": 5,
       "windowMs": 60000,

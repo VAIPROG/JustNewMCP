@@ -16,6 +16,8 @@ export const DEFAULT_ALLOWED_REDIRECT_URIS = [
   "https://gemini.google.com/",
   "https://aistudio.google.com/",
   "https://oauth-redirect.googleusercontent.com/",
+  "https://chatgpt.com/",
+  "https://platform.openai.com/",
   "http://127.0.0.1",
   "http://localhost",
 ];
@@ -37,6 +39,8 @@ export const OAuthConfigSchema = z.object({
   accessTokenTtlSec: z.number().int().min(60).default(3600),
   refreshTokenTtlSec: z.number().int().min(300).default(604_800),
   authCodeTtlSec: z.number().int().min(30).default(300),
+  inMemoryTokens: z.boolean().default(false),
+  tokenStorePath: z.string().min(1).optional(),
   rateLimit: RateLimitSchema.prefault({}),
 });
 
@@ -173,6 +177,12 @@ export function loadConfig(configPath?: string): AppConfig {
       clientId: process.env.JUSTNEWMCP_CLIENT_ID ?? rawOAuth.clientId,
       clientSecret:
         process.env.JUSTNEWMCP_CLIENT_SECRET ?? rawOAuth.clientSecret,
+      inMemoryTokens:
+        process.env.JUSTNEWMCP_IN_MEMORY_TOKENS !== undefined
+          ? process.env.JUSTNEWMCP_IN_MEMORY_TOKENS === "true"
+          : rawOAuth.inMemoryTokens,
+      tokenStorePath:
+        process.env.JUSTNEWMCP_TOKEN_STORE_PATH ?? rawOAuth.tokenStorePath,
     },
   };
 

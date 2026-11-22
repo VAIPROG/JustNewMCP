@@ -8,8 +8,9 @@ import {
   verifyPkceS256,
 } from "../security/crypto.ts";
 import { readBodyWithinLimit } from "../security/headers.ts";
-import { renderAuthorizePage } from "../ui/pages.ts";
 import { IpRateLimiter } from "../security/rate-limiter.ts";
+import { renderAuthorizePage } from "../ui/pages.ts";
+import { defaultTokenStorePath, HashedTokenStore } from "./token-store.ts";
 
 interface AuthCodeRecord {
   clientId: string;
@@ -133,6 +134,7 @@ export class OAuthServer {
   private readonly authCodes = new Map<string, AuthCodeRecord>();
   private readonly accessTokens = new Map<string, TokenRecord>();
   private readonly refreshTokens = new Map<string, TokenRecord>();
+  private readonly tokenStore?: HashedTokenStore;
   private approvalCode: string;
 
   constructor(
@@ -144,6 +146,24 @@ export class OAuthServer {
     this.onApprovalCodeRotated = options.onApprovalCodeRotated;
     this.csrfSecret = generateRandomToken(32);
     this.approvalCode = options.initialApprovalCode ?? generateApprovalCode();
+
+    if (!config.oauth.inMemoryTokens) {
+      const storePath =
+        config.oauth.tokenStorePath ??
+        defaultTokenStorePath(config.oauth.clientId);
+      this.tokenStore = new HashedTokenStore(storePath, config.allowedRoots);
+      const loaded = this.tokenStore.load();
+      for (const [hash, record] of loaded.accessTokens) {
+        this.accessTokens.set(hash, record);
+      }
+      for (const [hash, record] of loaded.refreshTokens) {
+        this.refreshTokens.set(hash, record);
+      }
+    }
+  }
+
+  private persistTokens(now = Date.now()): void {
+    this.tokenStore?.save(this.accessTokens, this.refreshTokens, now);
   }
 
   private resolveIp(req: Request, peerIp?: string): string {
@@ -158,11 +178,21 @@ export class OAuthServer {
     for (const [k, v] of this.authCodes) {
       if (v.expiresAt <= now) this.authCodes.delete(k);
     }
+    let tokensChanged = false;
     for (const [k, v] of this.accessTokens) {
-      if (v.expiresAt <= now) this.accessTokens.delete(k);
+      if (v.expiresAt <= now) {
+        this.accessTokens.delete(k);
+        tokensChanged = true;
+      }
     }
     for (const [k, v] of this.refreshTokens) {
-      if (v.expiresAt <= now) this.refreshTokens.delete(k);
+      if (v.expiresAt <= now) {
+        this.refreshTokens.delete(k);
+        tokensChanged = true;
+      }
+    }
+    if (tokensChanged) {
+      this.persistTokens(now);
     }
   }
 
@@ -194,6 +224,7 @@ export class OAuthServer {
       response_types_supported: ["code"],
       grant_types_supported: ["authorization_code", "refresh_token"],
       code_challenge_methods_supported: ["S256"],
+      authorization_response_iss_parameter_supported: true,
       token_endpoint_auth_methods_supported: [
         "client_secret_post",
         "client_secret_basic",
@@ -345,6 +376,7 @@ export class OAuthServer {
 
     const target = new URL(redirectUri);
     target.searchParams.set("code", code);
+    target.searchParams.set("iss", this.config.publicUrl);
     if (state) {
       target.searchParams.set("state", state);
     }
@@ -526,13 +558,16 @@ export class OAuthServer {
       const refresh = params.get("refresh_token") ?? "";
       const refreshHash = sha256Hex(refresh);
       const record = this.refreshTokens.get(refreshHash);
-      this.refreshTokens.delete(refreshHash);
+      const deleted = this.refreshTokens.delete(refreshHash);
 
       if (
         !record ||
         record.expiresAt < Date.now() ||
         record.clientId !== client.clientId
       ) {
+        if (deleted) {
+          this.persistTokens();
+        }
         this.rateLimiter.recordFailure(ip);
         this.audit.record("oauth.token.denied", ip, {
           clientId: client.clientId,
@@ -576,8 +611,11 @@ export class OAuthServer {
     const token = params.get("token") ?? "";
     if (token) {
       const hash = sha256Hex(token);
-      this.accessTokens.delete(hash);
-      this.refreshTokens.delete(hash);
+      const removedAccess = this.accessTokens.delete(hash);
+      const removedRefresh = this.refreshTokens.delete(hash);
+      if (removedAccess || removedRefresh) {
+        this.persistTokens();
+      }
       this.audit.record("oauth.token.revoked", ip, {
         clientId: client.clientId,
       });
@@ -601,6 +639,7 @@ export class OAuthServer {
       scope,
       expiresAt: now + this.config.oauth.refreshTokenTtlSec * 1000,
     });
+    this.persistTokens(now);
 
     return Response.json(
       {

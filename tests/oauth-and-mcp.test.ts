@@ -1,8 +1,17 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  ConfigSchema,
   DEFAULT_ALLOWED_REDIRECT_URIS,
   DEFAULT_DENIED_PATH_PATTERNS,
   type AppConfig,
@@ -49,6 +58,7 @@ describe("OAuth 2.1 security hardening and MCP /mcp integration", () => {
         accessTokenTtlSec: 3600,
         refreshTokenTtlSec: 604800,
         authCodeTtlSec: 300,
+        inMemoryTokens: true,
         rateLimit: {
           maxFailures: 3,
           windowMs: 60_000,
@@ -99,11 +109,13 @@ describe("OAuth 2.1 security hardening and MCP /mcp integration", () => {
     const asmJson = (await asm.json()) as {
       code_challenge_methods_supported: string[];
       revocation_endpoint: string;
+      authorization_response_iss_parameter_supported: boolean;
     };
     expect(asmJson.code_challenge_methods_supported).toContain("S256");
     expect(asmJson.revocation_endpoint).toBe(
       "https://mcp.example.com/oauth/revoke",
     );
+    expect(asmJson.authorization_response_iss_parameter_supported).toBe(true);
   });
 
   test("blocks open redirect and enforces exact callback path and query matching", async () => {
@@ -222,6 +234,7 @@ describe("OAuth 2.1 security hardening and MCP /mcp integration", () => {
         accessTokenTtlSec: 3600,
         refreshTokenTtlSec: 604800,
         authCodeTtlSec: 300,
+        inMemoryTokens: true,
         rateLimit: {
           maxFailures: 2,
           windowMs: 60_000,
@@ -543,5 +556,236 @@ describe("OAuth 2.1 security hardening and MCP /mcp integration", () => {
     expect(auditText).toContain("mcp.tool.called");
     expect(auditText).not.toContain(tokens.access_token);
     expect(auditText).not.toContain(clientSecret);
+  });
+
+  test("supports OpenAI ChatGPT redirect URIs and RFC 9207 iss parameter", async () => {
+    expect(
+      isAllowedRedirectUri(
+        "https://chatgpt.com/connector_platform_oauth_redirect",
+        DEFAULT_ALLOWED_REDIRECT_URIS,
+      ),
+    ).toBe(true);
+    expect(
+      isAllowedRedirectUri(
+        "https://chatgpt.com/connector/oauth/cb_12345",
+        DEFAULT_ALLOWED_REDIRECT_URIS,
+      ),
+    ).toBe(true);
+    expect(
+      isAllowedRedirectUri(
+        "https://platform.openai.com/oauth/callback",
+        DEFAULT_ALLOWED_REDIRECT_URIS,
+      ),
+    ).toBe(true);
+
+    const redirectUri = "https://chatgpt.com/connector_platform_oauth_redirect";
+    const verifier = generateRandomToken(48);
+    const challenge = computePkceS256(verifier);
+    const ip = "10.0.0.88";
+
+    const getRes = await fetch(
+      `${baseUrl}/oauth/authorize?response_type=code&client_id=${clientId}&redirect_uri=${encodeURIComponent(redirectUri)}&code_challenge=${challenge}&code_challenge_method=S256&state=openai-state`,
+      { headers: { "X-Forwarded-For": ip } },
+    );
+    expect(getRes.status).toBe(200);
+    const html = await getRes.text();
+    const csrfMatch = html.match(/name="csrf_token" value="([^"]+)"/);
+    expect(csrfMatch).not.toBeNull();
+    const cookieHeader = getRes.headers.get("set-cookie")?.split(";")[0] ?? "";
+
+    const postRes = await fetch(`${baseUrl}/oauth/authorize`, {
+      method: "POST",
+      redirect: "manual",
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded",
+        Cookie: cookieHeader,
+        "X-Forwarded-For": ip,
+      },
+      body: new URLSearchParams({
+        client_id: clientId,
+        redirect_uri: redirectUri,
+        code_challenge: challenge,
+        state: "openai-state",
+        scope: "mcp:tools",
+        csrf_token: csrfMatch?.[1] ?? "",
+        approval_code: running.oauth.getApprovalCode(),
+      }),
+    });
+    expect(postRes.status).toBe(302);
+    const location = new URL(postRes.headers.get("location") ?? "");
+    expect(location.origin + location.pathname).toBe(redirectUri);
+    expect(location.searchParams.get("code")).toBeTruthy();
+    expect(location.searchParams.get("state")).toBe("openai-state");
+    expect(location.searchParams.get("iss")).toBe("https://mcp.example.com");
+  });
+
+  test("persists hashed OAuth tokens across restarts when inMemoryTokens is false and stays RAM-only when true", async () => {
+    const storeDir = mkdtempSync(join(tmpdir(), "justnewmcp-token-store-"));
+    const tokenStorePath = join(storeDir, "oauth-tokens.json");
+    const ramOnlyPath = join(storeDir, "ram-only-tokens.json");
+    const redirectUri = "http://127.0.0.1:43219/callback";
+
+    const makeConfig = (
+      inMemoryTokens: boolean,
+      storePath: string,
+    ): AppConfig =>
+      ConfigSchema.parse({
+        host: "127.0.0.1",
+        port: 0,
+        publicUrl: "https://mcp.example.com",
+        trustedProxies: ["127.0.0.1", "::1"],
+        allowedRoots: [tempRoot],
+        oauth: {
+          clientId: "persist-test-client",
+          clientSecret: "persist-test-secret-value-1234567890",
+          allowedRedirectUris: [redirectUri],
+          inMemoryTokens,
+          tokenStorePath: storePath,
+        },
+      });
+
+    expect(() =>
+      createAppServer(
+        makeConfig(false, join(tempRoot, "oauth-tokens-inside.json")),
+      ),
+    ).toThrow(/outside configured allowedRoots/i);
+
+    const completeOAuth = async (srv: RunningServer) => {
+      const url = `http://127.0.0.1:${srv.server.port}`;
+      const verifier = generateRandomToken(48);
+      const challenge = computePkceS256(verifier);
+      const getRes = await fetch(
+        `${url}/oauth/authorize?response_type=code&client_id=persist-test-client&redirect_uri=${encodeURIComponent(redirectUri)}&code_challenge=${challenge}&code_challenge_method=S256&state=p1`,
+      );
+      const html = await getRes.text();
+      const csrf = html.match(/name="csrf_token" value="([^"]+)"/)?.[1] ?? "";
+      const cookie = getRes.headers.get("set-cookie")?.split(";")[0] ?? "";
+      const postRes = await fetch(`${url}/oauth/authorize`, {
+        method: "POST",
+        redirect: "manual",
+        headers: {
+          "Content-Type": "application/x-www-form-urlencoded",
+          Cookie: cookie,
+        },
+        body: new URLSearchParams({
+          client_id: "persist-test-client",
+          redirect_uri: redirectUri,
+          code_challenge: challenge,
+          state: "p1",
+          scope: "mcp:tools",
+          csrf_token: csrf,
+          approval_code: srv.oauth.getApprovalCode(),
+        }),
+      });
+      const code =
+        new URL(postRes.headers.get("location") ?? "").searchParams.get(
+          "code",
+        ) ?? "";
+      const tokenRes = await fetch(`${url}/oauth/token`, {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({
+          grant_type: "authorization_code",
+          code,
+          redirect_uri: redirectUri,
+          code_verifier: verifier,
+          client_id: "persist-test-client",
+          client_secret: "persist-test-secret-value-1234567890",
+        }),
+      });
+      expect(tokenRes.status).toBe(200);
+      return (await tokenRes.json()) as {
+        access_token: string;
+        refresh_token: string;
+      };
+    };
+
+    try {
+      const ramSrv = createAppServer(makeConfig(true, ramOnlyPath));
+      try {
+        await completeOAuth(ramSrv);
+        expect(existsSync(ramOnlyPath)).toBe(false);
+      } finally {
+        await ramSrv.shutdown(true);
+      }
+
+      const srv1 = createAppServer(makeConfig(false, tokenStorePath));
+      let tokens: { access_token: string; refresh_token: string };
+      try {
+        tokens = await completeOAuth(srv1);
+      } finally {
+        await srv1.shutdown(true);
+      }
+
+      expect(existsSync(tokenStorePath)).toBe(true);
+      if (process.platform !== "win32") {
+        expect(statSync(tokenStorePath).mode & 0o777).toBe(0o600);
+      }
+      const persistedRaw = readFileSync(tokenStorePath, "utf8");
+      expect(persistedRaw).not.toContain(tokens.access_token);
+      expect(persistedRaw).not.toContain(tokens.refresh_token);
+
+      const srv2 = createAppServer(makeConfig(false, tokenStorePath));
+      let refreshed: { access_token: string; refresh_token: string };
+      try {
+        const url2 = `http://127.0.0.1:${srv2.server.port}`;
+        const pingRes = await fetch(`${url2}/mcp`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${tokens.access_token}`,
+          },
+          body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "ping" }),
+        });
+        expect(pingRes.status).toBe(200);
+
+        const refreshRes = await fetch(`${url2}/oauth/token`, {
+          method: "POST",
+          headers: { "Content-Type": "application/x-www-form-urlencoded" },
+          body: new URLSearchParams({
+            grant_type: "refresh_token",
+            refresh_token: tokens.refresh_token,
+            client_id: "persist-test-client",
+            client_secret: "persist-test-secret-value-1234567890",
+          }),
+        });
+        expect(refreshRes.status).toBe(200);
+        refreshed = (await refreshRes.json()) as {
+          access_token: string;
+          refresh_token: string;
+        };
+
+        const revokeRes = await fetch(`${url2}/oauth/revoke`, {
+          method: "POST",
+          headers: { "Content-Type": "application/x-www-form-urlencoded" },
+          body: new URLSearchParams({
+            client_id: "persist-test-client",
+            client_secret: "persist-test-secret-value-1234567890",
+            token: refreshed.access_token,
+          }),
+        });
+        expect(revokeRes.status).toBe(200);
+      } finally {
+        await srv2.shutdown(true);
+      }
+
+      const srv3 = createAppServer(makeConfig(false, tokenStorePath));
+      try {
+        const url3 = `http://127.0.0.1:${srv3.server.port}`;
+        const revokedPing = await fetch(`${url3}/mcp`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${refreshed.access_token}`,
+          },
+          body: JSON.stringify({ jsonrpc: "2.0", id: 2, method: "ping" }),
+        });
+        expect(revokedPing.status).toBe(401);
+      } finally {
+        await srv3.shutdown(true);
+      }
+    } finally {
+      rmSync(storeDir, { recursive: true, force: true });
+    }
   });
 });

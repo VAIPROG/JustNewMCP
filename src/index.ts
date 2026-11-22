@@ -1,15 +1,13 @@
 import {
   closeSync,
   constants as fsConstants,
-  existsSync,
   fchmodSync,
   mkdirSync,
   openSync,
-  realpathSync,
   writeFileSync,
 } from "node:fs";
 import { homedir } from "node:os";
-import { basename, dirname, join, resolve } from "node:path";
+import { dirname, join } from "node:path";
 import { loadConfig, type AppConfig } from "./config.ts";
 import { McpRouter } from "./mcp/server.ts";
 import { OAuthServer } from "./oauth/server.ts";
@@ -17,7 +15,7 @@ import { ensureBunVersion } from "./runtime/bun-version.ts";
 import { AuditLogger } from "./security/audit.ts";
 import { withSecurityHeaders } from "./security/headers.ts";
 import { renderLandingPage } from "./ui/pages.ts";
-import { isPathInsideRoot } from "./workspace/paths.ts";
+import { assertFileOutsideAllowedRoots } from "./workspace/paths.ts";
 
 export interface RunningServer {
   server: ReturnType<typeof Bun.serve>;
@@ -32,40 +30,17 @@ export interface CreateServerOptions {
   onApprovalCodeRotated?: (code: string) => void;
 }
 
-function canonicalizeCandidatePath(filePath: string): string {
-  const abs = resolve(filePath);
-  if (existsSync(abs)) {
-    return realpathSync(abs);
-  }
-  const trailing: string[] = [];
-  let cursor = abs;
-  while (!existsSync(cursor)) {
-    const parent = dirname(cursor);
-    if (parent === cursor) break;
-    trailing.unshift(basename(cursor));
-    cursor = parent;
-  }
-  const realBase = existsSync(cursor) ? realpathSync(cursor) : cursor;
-  return join(realBase, ...trailing);
-}
-
 export function assertApprovalCodeFileOutsideAllowedRoots(
   filePath: string,
   allowedRoots: string[],
   platform: NodeJS.Platform = process.platform,
 ): string {
-  const canonicalTarget = canonicalizeCandidatePath(filePath);
-  for (const root of allowedRoots) {
-    const canonicalRoot = existsSync(resolve(root))
-      ? realpathSync(resolve(root))
-      : resolve(root);
-    if (isPathInsideRoot(canonicalTarget, canonicalRoot, platform)) {
-      throw new Error(
-        `Approval code file "${filePath}" must reside outside configured allowedRoots.`,
-      );
-    }
-  }
-  return canonicalTarget;
+  return assertFileOutsideAllowedRoots(
+    filePath,
+    allowedRoots,
+    "Approval code file",
+    platform,
+  );
 }
 
 function writeApprovalCodeFile(filePath: string, code: string): void {
