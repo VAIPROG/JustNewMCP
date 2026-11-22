@@ -16,6 +16,7 @@ import { OAuthServer } from "./oauth/server.ts";
 import { ensureBunVersion } from "./runtime/bun-version.ts";
 import { AuditLogger } from "./security/audit.ts";
 import { withSecurityHeaders } from "./security/headers.ts";
+import { renderLandingPage } from "./ui/pages.ts";
 import { isPathInsideRoot } from "./workspace/paths.ts";
 
 export interface RunningServer {
@@ -114,7 +115,16 @@ export function createAppServer(
       const peerIp = bunServer.requestIP(req)?.address ?? "127.0.0.1";
       let res: Response;
 
-      if (req.method === "GET" && url.pathname === "/health") {
+      if (req.method === "GET" && url.pathname === "/") {
+        res = new Response(renderLandingPage(config.publicUrl), {
+          status: 200,
+          headers: {
+            "Content-Type": "text/html; charset=utf-8",
+            "Content-Security-Policy":
+              "default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'",
+          },
+        });
+      } else if (req.method === "GET" && url.pathname === "/health") {
         res = Response.json({ status: "ok", bun: Bun.version });
       } else if (
         req.method === "GET" &&

@@ -74,6 +74,17 @@ describe("OAuth 2.1 security hardening and MCP /mcp integration", () => {
   });
 
   test("health and well-known metadata include security headers and revocation endpoint", async () => {
+    const landing = await fetch(`${baseUrl}/`);
+    expect(landing.status).toBe(200);
+    expect(landing.headers.get("content-type")).toContain("text/html");
+    expect(landing.headers.get("content-security-policy")).toContain(
+      "frame-ancestors 'none'",
+    );
+    const landingHtml = await landing.text();
+    expect(landingHtml).toContain("https://github.com/VAIPROG/JustNewMCP");
+    expect(landingHtml).toContain("prefers-color-scheme: dark");
+    expect(landingHtml).toContain("https://mcp.example.com/mcp");
+
     const health = await fetch(`${baseUrl}/health`);
     expect(health.status).toBe(200);
     expect(health.headers.get("x-content-type-options")).toBe("nosniff");
@@ -375,6 +386,31 @@ describe("OAuth 2.1 security hardening and MCP /mcp integration", () => {
     const tokenMatch = html.match(/name="csrf_token"\s+value="([^"]+)"/);
     const csrfToken = tokenMatch?.[1] ?? "";
     expect(csrfToken.length).toBeGreaterThan(16);
+
+    const wrongCode = await fetch(`${baseUrl}/oauth/authorize`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded",
+        "X-Forwarded-For": "198.51.100.77",
+        Cookie: `justnewmcp_csrf_sid=${csrfSid}`,
+      },
+      body: new URLSearchParams({
+        csrf_token: csrfToken,
+        client_id: clientId,
+        redirect_uri: redirectUri,
+        code_challenge: challenge,
+        state: "xyz",
+        scope: "mcp:tools",
+        approval_code: "WRONG-CODE-0000",
+      }),
+      redirect: "manual",
+    });
+    expect(wrongCode.status).toBe(403);
+    expect(wrongCode.headers.get("content-type")).toContain("text/html");
+    const wrongHtml = await wrongCode.text();
+    expect(wrongHtml).toContain("Invalid approval code");
+    expect(wrongHtml).toContain('role="alert"');
+    expect(wrongHtml).toContain('name="csrf_token"');
 
     const postAuth = await fetch(`${baseUrl}/oauth/authorize`, {
       method: "POST",
