@@ -23,7 +23,10 @@ import {
   memoryWriteTool,
 } from "../workspace/memory.ts";
 import { assertWorkspaceAnchored } from "../workspace/paths.ts";
-import { runShellTool } from "../workspace/shell.ts";
+import {
+  runShellTool,
+  stopAllActiveShellProcesses,
+} from "../workspace/shell.ts";
 import {
   PlanMode,
   TASK_FIELD_LIMITS,
@@ -610,8 +613,11 @@ export class McpRouter {
     private readonly audit: AuditLogger = new AuditLogger(),
   ) {}
 
-  stopAllBackgroundJobs(): Promise<void> {
-    return this.backgroundJobs.stopAllBackgroundJobs();
+  async stopAllBackgroundJobs(): Promise<void> {
+    await Promise.all([
+      this.backgroundJobs.stopAllBackgroundJobs(),
+      stopAllActiveShellProcesses(),
+    ]);
   }
 
   private requireActiveWorkspace(): string {

@@ -23,6 +23,48 @@ const NOFOLLOW =
     ? fsConstants.O_NOFOLLOW
     : 0;
 
+interface ActiveShellEntry {
+  proc: Bun.Subprocess<"ignore", "pipe", "pipe">;
+  abortController: AbortController;
+}
+
+const activeShellProcs = new Set<ActiveShellEntry>();
+
+const killActiveShellsOnExit = () => {
+  for (const { proc } of activeShellProcs) {
+    signalProcessGroup(proc, "SIGKILL");
+  }
+};
+
+export async function stopAllActiveShellProcesses(
+  graceMs = 500,
+): Promise<void> {
+  const entries = [...activeShellProcs];
+  if (entries.length === 0) return;
+  for (const { proc } of entries) {
+    signalProcessGroup(proc, "SIGTERM");
+  }
+  await Promise.all(
+    entries.map(async ({ proc, abortController }) => {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        await Promise.race([
+          proc.exited,
+          new Promise<void>((resolveWait) => {
+            timer = setTimeout(() => {
+              signalProcessGroup(proc, "SIGKILL");
+              abortController.abort();
+              resolveWait();
+            }, graceMs);
+          }),
+        ]);
+      } finally {
+        if (timer) clearTimeout(timer);
+      }
+    }),
+  );
+}
+
 export interface RunShellInput {
   command: string;
   timeoutMs?: number;
@@ -218,6 +260,11 @@ export async function runShellTool(
 
   let timedOut = false;
   const abortController = new AbortController();
+  const activeEntry: ActiveShellEntry = { proc, abortController };
+  if (activeShellProcs.size === 0) {
+    process.on("exit", killActiveShellsOnExit);
+  }
+  activeShellProcs.add(activeEntry);
   let killTimer: ReturnType<typeof setTimeout> | undefined;
 
   const timer = setTimeout(() => {
@@ -251,6 +298,10 @@ export async function runShellTool(
     if (killTimer) clearTimeout(killTimer);
     if (POSIX) {
       signalProcessGroup(proc, "SIGKILL");
+    }
+    activeShellProcs.delete(activeEntry);
+    if (activeShellProcs.size === 0) {
+      process.off("exit", killActiveShellsOnExit);
     }
   });
 
