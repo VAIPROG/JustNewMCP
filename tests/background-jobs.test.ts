@@ -1,18 +1,16 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import {
-  closeSync,
   mkdirSync,
   mkdtempSync,
-  openSync,
   readFileSync,
   readdirSync,
   rmSync,
   statSync,
   symlinkSync,
-  writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { ConfigSchema } from "../src/config.ts";
 import { createAppServer } from "../src/index.ts";
 import {
@@ -155,78 +153,41 @@ test("background execution shares the allowlist and streams both pipes into a bo
 }, 15_000);
 
 test.skipIf(process.platform === "win32")(
-  "the CLI waits for background jobs when it receives SIGTERM",
+  "the server waits for background jobs when it receives SIGTERM",
   async () => {
-    const clientId = "background-cli-fixture";
-    const clientSecret = generateRandomToken(32);
-    const workspace = join(root, "workspace");
-    const configPath = join(root, "server.json");
-    const approvalPath = join(root, "approval");
-    const stdoutPath = join(root, "server.stdout");
-    mkdirSync(workspace);
-    writeFileSync(
-      configPath,
-      JSON.stringify({
-        port: 0,
-        publicUrl: "https://mcp.example.com",
-        allowedRoots: [workspace],
-        allowedCommands: rules,
-        oauth: {
-          clientId,
-          clientSecret,
-          allowedRedirectUris: ["http://127.0.0.1/callback"],
+    const fixture = fileURLToPath(
+      new URL("./fixtures/background-signal-server.ts", import.meta.url),
+    );
+    let jobPid: number | undefined;
+    const server = Bun.spawn(
+      [process.execPath, fixture, root, longJob, jobMarker],
+      {
+        ipc(message: { status: string; pid: number }) {
+          if (
+            message.status === "running" &&
+            Number.isSafeInteger(message.pid) &&
+            message.pid > 0
+          ) {
+            jobPid = message.pid;
+          }
         },
-      }),
+        stdout: "inherit",
+        stderr: "inherit",
+      },
     );
 
-    const stdout = openSync(stdoutPath, "w");
-    let server: Bun.Subprocess;
     try {
-      server = Bun.spawn([process.execPath, "src/index.ts"], {
-        env: {
-          ...process.env,
-          JUSTNEWMCP_CONFIG: configPath,
-          JUSTNEWMCP_APPROVAL_CODE_FILE: approvalPath,
-        },
-        stdout,
-        stderr: "inherit",
-      });
-    } finally {
-      closeSync(stdout);
-    }
-
-    let jobPid: number | undefined;
-    try {
-      let baseUrl = "";
       await waitUntil(() => {
         if (server.exitCode !== null || server.signalCode !== null) {
-          throw new Error("CLI exited before accepting MCP requests.");
+          throw new Error(
+            "Server fixture exited before starting a background job.",
+          );
         }
-        baseUrl =
-          readFileSync(stdoutPath, "utf8").match(
-            /JustNewMCP listening on (http:\/\/127\.0\.0\.1:\d+)/,
-          )?.[1] ?? "";
-        return baseUrl !== "";
+        return jobPid !== undefined;
       });
-      const call = await authorizedMcp(
-        baseUrl,
-        clientId,
-        clientSecret,
-        readFileSync(approvalPath, "utf8").trim(),
-      );
-      expect(await call("workspace_init", { path: workspace })).toHaveProperty(
-        "workspace",
-      );
-      const job = await call("run_allowed_cmd", {
-        command: bun,
-        args: ["-e", longJob, jobMarker],
-        background: true,
-      });
-      expect(job.status).toBe("running");
-      jobPid = job.pid;
       server.kill("SIGTERM");
       expect(await server.exited).toBe(143);
-      expectExited(job.pid);
+      expectExited(jobPid!);
       jobPid = undefined;
     } finally {
       if (server.exitCode === null && server.signalCode === null)

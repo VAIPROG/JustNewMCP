@@ -159,6 +159,25 @@ export function createAppServer(
   return { server, oauth, mcp, audit, shutdown };
 }
 
+export function installShutdownSignalHandlers(
+  shutdown: RunningServer["shutdown"],
+): void {
+  let shuttingDown = false;
+  const stopOnSignal = (code: number) => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    void shutdown(true).then(
+      () => process.exit(code),
+      (err) => {
+        console.error("Server shutdown failed:", err);
+        process.exit(1);
+      },
+    );
+  };
+  process.once("SIGINT", () => stopOnSignal(130));
+  process.once("SIGTERM", () => stopOnSignal(143));
+}
+
 if (import.meta.main) {
   const bunVersion = ensureBunVersion("1.4.0");
   const config = loadConfig();
@@ -188,20 +207,7 @@ if (import.meta.main) {
     );
   }
   writeApprovalCodeFile(approvalCodeFile, oauth.getApprovalCode());
-  let shuttingDown = false;
-  const stopOnSignal = (code: number) => {
-    if (shuttingDown) return;
-    shuttingDown = true;
-    void shutdown(true).then(
-      () => process.exit(code),
-      (err) => {
-        console.error("Server shutdown failed:", err);
-        process.exit(1);
-      },
-    );
-  };
-  process.once("SIGINT", () => stopOnSignal(130));
-  process.once("SIGTERM", () => stopOnSignal(143));
+  installShutdownSignalHandlers(shutdown);
   console.log(
     `JustNewMCP listening on http://${server.hostname}:${server.port} (Bun ${bunVersion})`,
   );
