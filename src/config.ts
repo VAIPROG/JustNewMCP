@@ -71,6 +71,9 @@ export const ConfigSchema = z.object({
     .default(DEFAULT_DENIED_PATH_PATTERNS),
   allowEnvReading: z.boolean().default(false),
   askHumanAllowance: z.boolean().default(false),
+  allowShell: z.boolean().optional(),
+  shellTimeoutMs: z.number().int().min(100).max(600_000).optional(),
+  shellMaxOutputChars: z.number().int().min(1024).max(150_000).optional(),
   allowedCommands: z.array(AllowedCommandRuleSchema).default([]),
   maxMcpBodyBytes: z.number().int().min(1024).default(1_048_576),
   oauth: OAuthConfigSchema,
@@ -114,6 +117,10 @@ export function loadConfig(configPath?: string): AppConfig {
       process.env.JUSTNEWMCP_ASK_HUMAN_ALLOWANCE !== undefined
         ? process.env.JUSTNEWMCP_ASK_HUMAN_ALLOWANCE === "true"
         : raw.askHumanAllowance,
+    allowShell:
+      process.env.JUSTNEWMCP_ALLOW_SHELL !== undefined
+        ? process.env.JUSTNEWMCP_ALLOW_SHELL === "true"
+        : raw.allowShell,
     oauth: {
       ...rawOAuth,
       clientId: process.env.JUSTNEWMCP_CLIENT_ID ?? rawOAuth.clientId,

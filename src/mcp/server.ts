@@ -24,6 +24,10 @@ import {
 } from "../workspace/memory.ts";
 import { assertWorkspaceAnchored } from "../workspace/paths.ts";
 import {
+  runShellTool,
+  stopAllActiveShellProcesses,
+} from "../workspace/shell.ts";
+import {
   PlanMode,
   TASK_FIELD_LIMITS,
   TASK_STATUSES,
@@ -170,6 +174,11 @@ const WorktreeExitArgs = z.object({
   force: z.boolean().optional(),
 });
 
+const RunShellArgs = z.object({
+  command: z.string().min(1).max(32_768),
+  timeout_ms: z.number().int().min(100).max(600_000).optional(),
+});
+
 const TASK_PROPERTIES = {
   title: { type: "string", minLength: 1, maxLength: TASK_FIELD_LIMITS.title },
   status: { type: "string", enum: TASK_STATUSES },
@@ -195,6 +204,7 @@ const PLAN_BLOCKED_TOOLS = new Set([
   "memory_write",
   "worktree_enter",
   "worktree_exit",
+  "run_shell",
 ]);
 
 const TOOL_DEFINITIONS = [
@@ -569,6 +579,23 @@ const TOOL_DEFINITIONS = [
   },
 ];
 
+const RUN_SHELL_TOOL_DEFINITION = {
+  name: "run_shell",
+  description:
+    "Run a local shell command (Bash on Linux, PowerShell on Windows) inside the active workspace. Disabled unless allowShell is enabled in config.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      command: {
+        type: "string",
+        description: "Shell command string to execute",
+      },
+      timeout_ms: { type: "integer", minimum: 100, maximum: 600000 },
+    },
+    required: ["command"],
+  },
+};
+
 export class McpRouter {
   private readonly workspaceState: WorkspaceState = {
     activeRoot: null,
@@ -586,8 +613,11 @@ export class McpRouter {
     private readonly audit: AuditLogger = new AuditLogger(),
   ) {}
 
-  stopAllBackgroundJobs(): Promise<void> {
-    return this.backgroundJobs.stopAllBackgroundJobs();
+  async stopAllBackgroundJobs(): Promise<void> {
+    await Promise.all([
+      this.backgroundJobs.stopAllBackgroundJobs(),
+      stopAllActiveShellProcesses(this),
+    ]);
   }
 
   private requireActiveWorkspace(): string {
@@ -662,10 +692,13 @@ export class McpRouter {
     }
 
     if (payload.method === "tools/list") {
+      const tools = this.config.allowShell
+        ? [...TOOL_DEFINITIONS, RUN_SHELL_TOOL_DEFINITION]
+        : TOOL_DEFINITIONS;
       return Response.json({
         jsonrpc: "2.0",
         id,
-        result: { tools: TOOL_DEFINITIONS },
+        result: { tools },
       });
     }
 
@@ -1019,6 +1052,32 @@ export class McpRouter {
           baseRef: parsed.base_ref,
         },
       );
+    }
+
+    if (name === "run_shell") {
+      if (!this.config.allowShell) {
+        throw new Error(
+          "run_shell is disabled. Set allowShell: true in config to enable.",
+        );
+      }
+      const root = this.requireActiveWorkspace();
+      const parsed = RunShellArgs.parse(args);
+      const maxTimeoutMs = this.config.shellTimeoutMs ?? 30_000;
+      const timeoutMs = Math.min(
+        parsed.timeout_ms ?? maxTimeoutMs,
+        maxTimeoutMs,
+      );
+      this.audit.record("mcp.shell.called", ip, {
+        clientId,
+        detail: parsed.command.slice(0, 120),
+      });
+      return runShellTool(root, {
+        command: parsed.command,
+        timeoutMs,
+        maxOutputChars: this.config.shellMaxOutputChars ?? 30_000,
+        allowShell: this.config.allowShell === true,
+        owner: this,
+      });
     }
 
     if (name === "worktree_exit") {
