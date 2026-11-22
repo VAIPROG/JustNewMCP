@@ -152,6 +152,7 @@ export function createAppServer(
     await Promise.all([
       stopListening(closeActiveConnections),
       mcp.stopAllBackgroundJobs(),
+      mcp.stopLanguageServers(),
     ]);
   };
   server.stop = shutdown;
