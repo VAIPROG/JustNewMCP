@@ -152,11 +152,13 @@ export function createAppServer(
 if (import.meta.main) {
   const bunVersion = ensureBunVersion("1.4.0");
   const config = loadConfig();
-  const approvalCodeFile = assertApprovalCodeFileOutsideAllowedRoots(
-    process.env.JUSTNEWMCP_APPROVAL_CODE_FILE ??
-      join(homedir(), ".justnewmcp", "approval-code"),
-    config.allowedRoots,
-  );
+  const configuredApprovalPath = process.env.JUSTNEWMCP_APPROVAL_CODE_FILE;
+  let approvalCodeFile = configuredApprovalPath
+    ? assertApprovalCodeFileOutsideAllowedRoots(
+        configuredApprovalPath,
+        config.allowedRoots,
+      )
+    : "";
   const { server, oauth } = createAppServer(config, {
     onApprovalCodeRotated(code) {
       writeApprovalCodeFile(approvalCodeFile, code);
@@ -165,6 +167,16 @@ if (import.meta.main) {
       );
     },
   });
+  if (!approvalCodeFile) {
+    approvalCodeFile = assertApprovalCodeFileOutsideAllowedRoots(
+      join(
+        homedir(),
+        ".justnewmcp",
+        `approval-code-${server.port}-${process.pid}`,
+      ),
+      config.allowedRoots,
+    );
+  }
   writeApprovalCodeFile(approvalCodeFile, oauth.getApprovalCode());
   console.log(
     `JustNewMCP listening on http://${server.hostname}:${server.port} (Bun ${bunVersion})`,

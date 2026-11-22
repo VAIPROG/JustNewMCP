@@ -5,6 +5,7 @@ export const INTERNAL_PROTECTED_PATTERNS = [
   ".justnewmcp/checkpoints",
   ".justnewmcp/checkpoints/*",
   ".justnewmcp/approval-code",
+  ".justnewmcp/approval-code-*",
 ];
 const SAFE_ENV_TEMPLATES = new Set([
   ".env.example",
