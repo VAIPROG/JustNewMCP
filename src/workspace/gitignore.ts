@@ -73,7 +73,14 @@ export function loadGitignoreMatcher(
       process.platform !== "win32" && typeof fsConstants.O_NOFOLLOW === "number"
         ? fsConstants.O_NOFOLLOW
         : 0;
-    const fd = openSync(resolvedPath, fsConstants.O_RDONLY | noFollowFlag);
+    const nonBlockFlag =
+      process.platform !== "win32" && typeof fsConstants.O_NONBLOCK === "number"
+        ? fsConstants.O_NONBLOCK
+        : 0;
+    const fd = openSync(
+      resolvedPath,
+      fsConstants.O_RDONLY | noFollowFlag | nonBlockFlag,
+    );
     try {
       const stat = fstatSync(fd);
       if (!stat.isFile() || stat.size > MAX_GITIGNORE_BYTES) {

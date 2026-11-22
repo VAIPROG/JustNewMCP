@@ -17,7 +17,11 @@ import {
   DEFAULT_DENIED_PATH_PATTERNS,
   type AppConfig,
 } from "../src/config.ts";
-import { createAppServer, type RunningServer } from "../src/index.ts";
+import {
+  assertApprovalCodeFileOutsideAllowedRoots,
+  createAppServer,
+  type RunningServer,
+} from "../src/index.ts";
 import {
   computePkceS256,
   generateRandomToken,
@@ -718,6 +722,51 @@ describe("filesystem tools and local checkpoints", () => {
       },
     );
     expect(giGrep.matches).toEqual([]);
+
+    // FIFO .gitignore must not block the event loop on POSIX
+    if (process.platform !== "win32") {
+      const fifoWorkspace = join(baseDir, "fifo-gitignore-repo");
+      mkdirSync(fifoWorkspace, { recursive: true });
+      writeFileSync(join(fifoWorkspace, "ok.txt"), "hello\n", "utf8");
+      const mkfifo = Bun.spawnSync([
+        "mkfifo",
+        join(fifoWorkspace, ".gitignore"),
+      ]);
+      if (mkfifo.exitCode === 0) {
+        const fifoGlob = await globFilesTool(
+          fifoWorkspace,
+          DEFAULT_DENIED_PATH_PATTERNS,
+          "**/*",
+        );
+        expect(fifoGlob.files).toContain("ok.txt");
+      }
+    }
+
+    // .justnewmcp/approval-code must be blocked from MCP reads and rejected inside allowedRoots
+    mkdirSync(join(workspaceDir, ".justnewmcp"), { recursive: true });
+    writeFileSync(
+      join(workspaceDir, ".justnewmcp", "approval-code"),
+      "ABCD-1234-5678\n",
+      "utf8",
+    );
+    const tracker = new Set<string>();
+    await expect(
+      readFileTool(workspaceDir, DEFAULT_DENIED_PATH_PATTERNS, tracker, {
+        path: ".justnewmcp/approval-code",
+      }),
+    ).rejects.toThrow("blocked by security policy");
+    expect(() =>
+      assertApprovalCodeFileOutsideAllowedRoots(
+        join(workspaceDir, ".justnewmcp", "approval-code"),
+        [workspaceDir],
+      ),
+    ).toThrow("outside configured allowedRoots");
+    expect(
+      assertApprovalCodeFileOutsideAllowedRoots(
+        join(outsideDir, "approval-code"),
+        [workspaceDir],
+      ),
+    ).toContain("approval-code");
   });
 
   test("end-to-end MCP /mcp HTTP call flow for write_file, read_file, edit_file, and checkpoint_rewind", async () => {

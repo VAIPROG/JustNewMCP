@@ -310,26 +310,21 @@ export async function writeFileTool(
   const cp = await createCheckpoint(workspaceRoot, targetPath, "write_file");
   let bytesWritten: number;
   if (isEnvSecretPath(targetPath) && process.platform !== "win32") {
+    const fd = openSync(
+      targetPath,
+      fsConstants.O_WRONLY |
+        fsConstants.O_CREAT |
+        fsConstants.O_TRUNC |
+        fsConstants.O_NOFOLLOW,
+      0o600,
+    );
     try {
-      const fd = openSync(
-        targetPath,
-        fsConstants.O_WRONLY |
-          fsConstants.O_CREAT |
-          fsConstants.O_EXCL |
-          fsConstants.O_NOFOLLOW,
-        0o600,
-      );
-      try {
-        fchmodSync(fd, 0o600);
-        writeFileSync(fd, content, "utf8");
-      } finally {
-        closeSync(fd);
-      }
-      bytesWritten = Buffer.byteLength(content, "utf8");
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
-      bytesWritten = await Bun.write(targetPath, content);
+      fchmodSync(fd, 0o600);
+      writeFileSync(fd, content, "utf8");
+    } finally {
+      closeSync(fd);
     }
+    bytesWritten = Buffer.byteLength(content, "utf8");
   } else {
     bytesWritten = await Bun.write(targetPath, content);
   }

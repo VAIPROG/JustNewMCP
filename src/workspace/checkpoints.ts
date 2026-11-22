@@ -242,24 +242,19 @@ export async function rewindCheckpoint(
   mkdirSync(dirname(targetPath), { recursive: true });
   const bytes = await Bun.file(snapshotPath).bytes();
   if (isEnvSecretPath(targetPath) && process.platform !== "win32") {
+    const fd = openSync(
+      targetPath,
+      fsConstants.O_WRONLY |
+        fsConstants.O_CREAT |
+        fsConstants.O_TRUNC |
+        fsConstants.O_NOFOLLOW,
+      0o600,
+    );
     try {
-      const fd = openSync(
-        targetPath,
-        fsConstants.O_WRONLY |
-          fsConstants.O_CREAT |
-          fsConstants.O_EXCL |
-          fsConstants.O_NOFOLLOW,
-        0o600,
-      );
-      try {
-        fchmodSync(fd, 0o600);
-        writeFileSync(fd, bytes);
-      } finally {
-        closeSync(fd);
-      }
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
-      await Bun.write(targetPath, bytes);
+      fchmodSync(fd, 0o600);
+      writeFileSync(fd, bytes);
+    } finally {
+      closeSync(fd);
     }
   } else {
     await Bun.write(targetPath, bytes);
