@@ -1,3 +1,13 @@
+import {
+  closeSync,
+  constants as fsConstants,
+  fchmodSync,
+  mkdirSync,
+  openSync,
+  writeFileSync,
+} from "node:fs";
+import { homedir } from "node:os";
+import { dirname, join, resolve } from "node:path";
 import { loadConfig, type AppConfig } from "./config.ts";
 import { McpRouter } from "./mcp/server.ts";
 import { OAuthServer } from "./oauth/server.ts";
@@ -15,6 +25,31 @@ export interface RunningServer {
 export interface CreateServerOptions {
   initialApprovalCode?: string;
   onApprovalCodeRotated?: (code: string) => void;
+}
+
+function writeApprovalCodeFile(filePath: string, code: string): void {
+  const dir = dirname(filePath);
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  const noFollowFlag =
+    process.platform !== "win32" && typeof fsConstants.O_NOFOLLOW === "number"
+      ? fsConstants.O_NOFOLLOW
+      : 0;
+  const fd = openSync(
+    filePath,
+    fsConstants.O_WRONLY |
+      fsConstants.O_CREAT |
+      fsConstants.O_TRUNC |
+      noFollowFlag,
+    0o600,
+  );
+  try {
+    if (process.platform !== "win32") {
+      fchmodSync(fd, 0o600);
+    }
+    writeFileSync(fd, `${code}\n`, "utf8");
+  } finally {
+    closeSync(fd);
+  }
 }
 
 export function createAppServer(
@@ -78,13 +113,23 @@ export function createAppServer(
 if (import.meta.main) {
   const bunVersion = ensureBunVersion("1.4.0");
   const config = loadConfig();
+  const approvalCodeFile = resolve(
+    process.env.JUSTNEWMCP_APPROVAL_CODE_FILE ??
+      join(homedir(), ".justnewmcp", "approval-code"),
+  );
   const { server, oauth } = createAppServer(config, {
     onApprovalCodeRotated(code) {
-      console.log(`Rotated one-time OAuth approval code: ${code}`);
+      writeApprovalCodeFile(approvalCodeFile, code);
+      console.log(
+        `Rotated one-time OAuth approval code written to ${approvalCodeFile}`,
+      );
     },
   });
+  writeApprovalCodeFile(approvalCodeFile, oauth.getApprovalCode());
   console.log(
     `JustNewMCP listening on http://${server.hostname}:${server.port} (Bun ${bunVersion})`,
   );
-  console.log(`One-time OAuth approval code: ${oauth.getApprovalCode()}`);
+  console.log(
+    `One-time OAuth approval code written to ${approvalCodeFile} (mode 0600)`,
+  );
 }

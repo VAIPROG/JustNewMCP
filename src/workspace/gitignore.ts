@@ -1,4 +1,10 @@
-import { existsSync, readFileSync, statSync } from "node:fs";
+import {
+  closeSync,
+  constants as fsConstants,
+  fstatSync,
+  openSync,
+  readFileSync,
+} from "node:fs";
 import { join } from "node:path";
 import { resolveInsideRoots } from "./paths.ts";
 
@@ -58,25 +64,30 @@ export function loadGitignoreMatcher(
   workspaceRoot: string,
 ): (relPosixPath: string) => boolean {
   const gitignorePath = join(workspaceRoot, ".gitignore");
-  if (!existsSync(gitignorePath)) {
-    return () => false;
-  }
-
-  let resolvedPath: string;
+  let raw: string;
   try {
-    resolvedPath = resolveInsideRoots(gitignorePath, [
+    const resolvedPath = resolveInsideRoots(gitignorePath, [
       workspaceRoot,
     ]).resolvedPath;
-    const stat = statSync(resolvedPath);
-    if (!stat.isFile() || stat.size > MAX_GITIGNORE_BYTES) {
-      return () => false;
+    const noFollowFlag =
+      process.platform !== "win32" && typeof fsConstants.O_NOFOLLOW === "number"
+        ? fsConstants.O_NOFOLLOW
+        : 0;
+    const fd = openSync(resolvedPath, fsConstants.O_RDONLY | noFollowFlag);
+    try {
+      const stat = fstatSync(fd);
+      if (!stat.isFile() || stat.size > MAX_GITIGNORE_BYTES) {
+        return () => false;
+      }
+      raw = readFileSync(fd, "utf8");
+    } finally {
+      closeSync(fd);
     }
   } catch {
     return () => false;
   }
 
   const rules: IgnoreRule[] = [];
-  const raw = readFileSync(resolvedPath, "utf8");
   for (const line of raw.split(/\r?\n/)) {
     const compiled = compileGitignoreLine(line);
     if (compiled) rules.push(compiled);

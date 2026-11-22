@@ -1,7 +1,10 @@
 import {
-  chmodSync,
+  closeSync,
+  constants as fsConstants,
   existsSync,
+  fchmodSync,
   mkdirSync,
+  openSync,
   statSync,
   writeFileSync,
 } from "node:fs";
@@ -304,17 +307,29 @@ export async function writeFileTool(
   );
   mkdirSync(dirname(targetPath), { recursive: true });
 
-  const existedBefore = existsSync(targetPath);
   const cp = await createCheckpoint(workspaceRoot, targetPath, "write_file");
   let bytesWritten: number;
-  if (
-    !existedBefore &&
-    isEnvSecretPath(targetPath) &&
-    process.platform !== "win32"
-  ) {
-    writeFileSync(targetPath, content, { encoding: "utf8", mode: 0o600 });
-    chmodSync(targetPath, 0o600);
-    bytesWritten = Buffer.byteLength(content, "utf8");
+  if (isEnvSecretPath(targetPath) && process.platform !== "win32") {
+    try {
+      const fd = openSync(
+        targetPath,
+        fsConstants.O_WRONLY |
+          fsConstants.O_CREAT |
+          fsConstants.O_EXCL |
+          fsConstants.O_NOFOLLOW,
+        0o600,
+      );
+      try {
+        fchmodSync(fd, 0o600);
+        writeFileSync(fd, content, "utf8");
+      } finally {
+        closeSync(fd);
+      }
+      bytesWritten = Buffer.byteLength(content, "utf8");
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
+      bytesWritten = await Bun.write(targetPath, content);
+    }
   } else {
     bytesWritten = await Bun.write(targetPath, content);
   }

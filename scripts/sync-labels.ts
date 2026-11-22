@@ -1,11 +1,11 @@
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { z } from "zod";
+import rawLabels from "../.github/labels.json" with { type: "json" };
 
-interface LabelSpec {
-  name: string;
-  color: string;
-  description: string;
-}
+const LabelSpecSchema = z.object({
+  name: z.string().min(1),
+  color: z.string().regex(/^[0-9a-fA-F]{6}$/),
+  description: z.string(),
+});
 
 const token = process.env.GITHUB_TOKEN;
 const repo = process.env.GITHUB_REPO ?? "VAIPROG/JustNewMCP";
@@ -18,8 +18,7 @@ if (!token) {
   process.exit(1);
 }
 
-const labelsPath = resolve(import.meta.dir, "../.github/labels.json");
-const labels = JSON.parse(readFileSync(labelsPath, "utf8")) as LabelSpec[];
+const labels = z.array(LabelSpecSchema).parse(rawLabels);
 
 const headers = {
   Authorization: `Bearer ${token}`,
