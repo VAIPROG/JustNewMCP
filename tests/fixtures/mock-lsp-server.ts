@@ -1,4 +1,4 @@
-import { appendFileSync } from "node:fs";
+import { appendFileSync, writeSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
@@ -35,7 +35,7 @@ const trace = (event: string, details?: unknown) => {
 };
 
 let outgoing = Promise.resolve();
-function send(...messages: unknown[]): void {
+function send(...messages: unknown[]): Promise<void> {
   const frames = Buffer.concat(
     messages.flatMap((message) => {
       const body = Buffer.from(JSON.stringify(message), "utf8");
@@ -55,12 +55,16 @@ function send(...messages: unknown[]): void {
       frames.subarray(7, split),
       frames.subarray(split),
     ]) {
-      await new Promise<void>((resolve, reject) => {
-        process.stdout.write(part, (err) => (err ? reject(err) : resolve()));
-      });
+      let offset = 0;
+      while (offset < part.length) {
+        const written = writeSync(1, part, offset, part.length - offset);
+        if (written === 0) throw new Error("Mock LSP stdout made no progress.");
+        offset += written;
+      }
       await Bun.sleep(2);
     }
   });
+  return outgoing;
 }
 
 const result = (id: Message["id"], value: unknown) => ({
@@ -215,16 +219,19 @@ async function handle(message: Message): Promise<void> {
     const { line, character } = params.position;
     if (line === 3) process.exit(4);
     if (line === 4) {
-      process.stdout.write("Content-Length: 20\r\nContent-Length: 30\r\n\r\n");
+      await outgoing;
+      writeSync(1, "Content-Length: 20\r\nContent-Length: 30\r\n\r\n");
       return;
     }
     if (line === 5) return;
     if (line === 6) {
-      send({
+      trace("request-error", id);
+      await send({
         jsonrpc: "2.0",
         id,
         error: { code: -32603, message: uri(outside) },
       });
+      trace("sent-error", id);
       return;
     }
     if (line === 1) {

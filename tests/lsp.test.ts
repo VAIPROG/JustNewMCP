@@ -298,9 +298,13 @@ test("navigation filters malformed, denied, symlinked and outside URIs and match
   expect(await lsp.navigate(root, "references", source, 1, 1, 10)).toHaveLength(
     2,
   );
-  await expect(
-    lsp.navigate(root, "definition", source, 7, 1, 10),
-  ).rejects.toThrow("Language server request failed (code -32603).");
+  const error = await lsp.navigate(root, "definition", source, 7, 1, 10).then(
+    () => null,
+    (reason: Error) => reason.message,
+  );
+  expect(error, JSON.stringify(trace())).toBe(
+    "Language server request failed (code -32603).",
+  );
   expect(await lsp.navigate(root, "definition", source, 1, 1, 10)).toHaveLength(
     1,
   );
