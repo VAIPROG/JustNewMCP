@@ -894,7 +894,6 @@ export class McpRouter {
         const listChanged =
           name === "tool_search" &&
           typeof result === "object" &&
-          result !== null &&
           "newlyActivated" in result &&
           Array.isArray(
             (result as { newlyActivated?: unknown }).newlyActivated,
