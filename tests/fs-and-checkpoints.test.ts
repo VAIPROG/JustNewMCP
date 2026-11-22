@@ -750,9 +750,19 @@ describe("filesystem tools and local checkpoints", () => {
       "utf8",
     );
     const tracker = new Set<string>();
+    writeFileSync(
+      join(workspaceDir, ".justnewmcp", "approval-code-8787-1234"),
+      "WXYZ-5678-1234\n",
+      "utf8",
+    );
     await expect(
       readFileTool(workspaceDir, DEFAULT_DENIED_PATH_PATTERNS, tracker, {
         path: ".justnewmcp/approval-code",
+      }),
+    ).rejects.toThrow("blocked by security policy");
+    await expect(
+      readFileTool(workspaceDir, DEFAULT_DENIED_PATH_PATTERNS, tracker, {
+        path: ".justnewmcp/approval-code-8787-1234",
       }),
     ).rejects.toThrow("blocked by security policy");
     expect(() =>

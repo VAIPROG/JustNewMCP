@@ -67,6 +67,20 @@ export function isPathDenied(
       ) {
         return true;
       }
+      if (
+        cleanPattern.includes("*") ||
+        cleanPattern.includes("?") ||
+        cleanPattern.includes("[")
+      ) {
+        const cleanTrimmed = cleanPattern.replace(/^\/+/, "");
+        const candidateRel = normalized.replace(/^\/+/, "");
+        if (
+          new Bun.Glob(cleanTrimmed).match(candidateRel) ||
+          new Bun.Glob(`**/${cleanTrimmed}`).match(candidateRel)
+        ) {
+          return true;
+        }
+      }
     } else if (new Bun.Glob(cleanPattern).match(base)) {
       return true;
     }
