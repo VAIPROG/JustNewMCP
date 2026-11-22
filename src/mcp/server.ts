@@ -16,6 +16,11 @@ import {
   writeFileTool,
 } from "../workspace/fs-tools.ts";
 import { initializeWorkspace, type WorkspaceState } from "../workspace/init.ts";
+import {
+  memoryReadTool,
+  memorySearchTool,
+  memoryWriteTool,
+} from "../workspace/memory.ts";
 import { assertWorkspaceAnchored } from "../workspace/paths.ts";
 import {
   PlanMode,
@@ -118,6 +123,24 @@ const TaskCreateArgs = z.object({
 const TaskUpdateArgs = TaskCreateArgs.partial().merge(TaskIdArgs);
 const PlanArgs = z.object({ summary: z.string().optional() });
 
+const MemoryReadArgs = z.object({
+  path: z.string().min(1).max(300).optional(),
+  offset: z.number().int().min(1).optional(),
+  limit: z.number().int().min(1).max(2000).optional(),
+});
+
+const MemoryWriteArgs = z.object({
+  path: z.string().min(1).max(300).optional(),
+  content: z.string(),
+  mode: z.enum(["overwrite", "append"]).optional(),
+});
+
+const MemorySearchArgs = z.object({
+  pattern: z.string().min(1).max(500),
+  case_insensitive: z.boolean().optional(),
+  max_matches: z.number().int().min(1).max(200).optional(),
+});
+
 const TASK_PROPERTIES = {
   title: { type: "string", minLength: 1, maxLength: TASK_FIELD_LIMITS.title },
   status: { type: "string", enum: TASK_STATUSES },
@@ -139,6 +162,7 @@ const PLAN_BLOCKED_TOOLS = new Set([
   "set_env_var",
   "checkpoint_rewind",
   "run_allowed_cmd",
+  "memory_write",
 ]);
 
 const TOOL_DEFINITIONS = [
@@ -376,6 +400,55 @@ const TOOL_DEFINITIONS = [
     description:
       "Exit read-only workspace mode and return the plan summary, with an optional replacement.",
     inputSchema: { type: "object", properties: PLAN_PROPERTIES },
+  },
+  {
+    name: "memory_read",
+    description:
+      "Read MEMORY.md or a nested topic file inside the active project's memory directory.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        path: {
+          type: "string",
+          description:
+            "Relative path inside project memory (default: MEMORY.md)",
+        },
+        offset: { type: "integer", minimum: 1 },
+        limit: { type: "integer", minimum: 1, maximum: 2000 },
+      },
+    },
+  },
+  {
+    name: "memory_write",
+    description:
+      "Create, overwrite, or append to MEMORY.md or a topic file inside the active project's memory directory.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        path: {
+          type: "string",
+          description:
+            "Relative path inside project memory (default: MEMORY.md)",
+        },
+        content: { type: "string" },
+        mode: { type: "string", enum: ["overwrite", "append"] },
+      },
+      required: ["content"],
+    },
+  },
+  {
+    name: "memory_search",
+    description:
+      "Search Markdown files inside the active project's memory directory by regular expression.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        pattern: { type: "string" },
+        case_insensitive: { type: "boolean" },
+        max_matches: { type: "integer", minimum: 1, maximum: 200 },
+      },
+      required: ["pattern"],
+    },
   },
 ];
 
@@ -730,6 +803,35 @@ export class McpRouter {
         command: parsed.command,
         args: parsed.args,
         timeoutMs: parsed.timeout_ms,
+      });
+    }
+
+    if (name === "memory_read") {
+      const root = this.requireActiveWorkspace();
+      const parsed = MemoryReadArgs.parse(args);
+      return memoryReadTool(root, this.config.memoryDir, {
+        ...parsed,
+        deniedPatterns: this.config.deniedPathPatterns,
+      });
+    }
+
+    if (name === "memory_write") {
+      const root = this.requireActiveWorkspace();
+      const parsed = MemoryWriteArgs.parse(args);
+      return memoryWriteTool(root, this.config.memoryDir, {
+        ...parsed,
+        deniedPatterns: this.config.deniedPathPatterns,
+      });
+    }
+
+    if (name === "memory_search") {
+      const root = this.requireActiveWorkspace();
+      const parsed = MemorySearchArgs.parse(args);
+      return memorySearchTool(root, this.config.memoryDir, {
+        pattern: parsed.pattern,
+        caseInsensitive: parsed.case_insensitive,
+        maxMatches: parsed.max_matches,
+        deniedPatterns: this.config.deniedPathPatterns,
       });
     }
 
