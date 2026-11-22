@@ -282,9 +282,7 @@ export function assertFileOutsideAllowedRoots(
 ): string {
   const canonicalTarget = canonicalizeCandidatePath(filePath);
   for (const root of allowedRoots) {
-    const canonicalRoot = existsSync(path.resolve(root))
-      ? realpathSync(path.resolve(root))
-      : path.resolve(root);
+    const canonicalRoot = canonicalizeCandidatePath(root);
     if (isPathInsideRoot(canonicalTarget, canonicalRoot, platform)) {
       throw new Error(
         `${label} "${filePath}" must reside outside configured allowedRoots.`,

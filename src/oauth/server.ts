@@ -212,7 +212,11 @@ export class OAuthServer {
       }
     }
     if (tokensChanged || this.tokenStoreDirty) {
-      this.persistTokens(now);
+      try {
+        this.persistTokens(now);
+      } catch {
+        // Best-effort during read/auth paths; tokenStoreDirty remains true for retry.
+      }
     }
   }
 
@@ -596,12 +600,15 @@ export class OAuthServer {
         return Response.json({ error: "invalid_grant" }, { status: 400 });
       }
 
+      const res = this.issueTokenPair(record.clientId, record.scope, {
+        rollbackRefresh: { hash: refreshHash, record },
+      });
       this.rateLimiter.recordSuccess(ip);
       this.audit.record("oauth.token.issued", ip, {
         clientId: record.clientId,
         detail: "refresh_token",
       });
-      return this.issueTokenPair(record.clientId, record.scope);
+      return res;
     }
 
     return Response.json({ error: "unsupported_grant_type" }, { status: 400 });
@@ -644,22 +651,40 @@ export class OAuthServer {
     return new Response(null, { status: 200 });
   }
 
-  private issueTokenPair(clientId: string, scope: string): Response {
+  private issueTokenPair(
+    clientId: string,
+    scope: string,
+    opts?: { rollbackRefresh?: { hash: string; record: TokenRecord } },
+  ): Response {
     const now = Date.now();
     const accessToken = generateRandomToken(32);
     const refreshToken = generateRandomToken(32);
+    const accessHash = sha256Hex(accessToken);
+    const refreshHash = sha256Hex(refreshToken);
 
-    this.accessTokens.set(sha256Hex(accessToken), {
+    this.accessTokens.set(accessHash, {
       clientId,
       scope,
       expiresAt: now + this.config.oauth.accessTokenTtlSec * 1000,
     });
-    this.refreshTokens.set(sha256Hex(refreshToken), {
+    this.refreshTokens.set(refreshHash, {
       clientId,
       scope,
       expiresAt: now + this.config.oauth.refreshTokenTtlSec * 1000,
     });
-    this.persistTokens(now);
+    try {
+      this.persistTokens(now);
+    } catch (err) {
+      this.accessTokens.delete(accessHash);
+      this.refreshTokens.delete(refreshHash);
+      if (opts?.rollbackRefresh) {
+        this.refreshTokens.set(
+          opts.rollbackRefresh.hash,
+          opts.rollbackRefresh.record,
+        );
+      }
+      throw err;
+    }
 
     return Response.json(
       {
