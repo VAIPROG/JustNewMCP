@@ -56,6 +56,44 @@ export const AllowedCommandRuleSchema = z.object({
 
 export type AllowedCommandRule = z.infer<typeof AllowedCommandRuleSchema>;
 
+export const LspServerSchema = z.object({
+  languageId: z.string().trim().min(1).max(128),
+  extensions: z
+    .array(
+      z
+        .string()
+        .regex(/^\.?[\w+-]+$/)
+        .max(32),
+    )
+    .min(1)
+    .max(32),
+  command: z
+    .string()
+    .min(1)
+    .max(256)
+    .refine(
+      (command) =>
+        command.trim() === command &&
+        !/[/\\:\x00-\x1f]/.test(command) &&
+        command !== "." &&
+        command !== "..",
+      { message: "Language server command must be a bare executable name." },
+    ),
+  args: z
+    .array(
+      z
+        .string()
+        .max(4096)
+        .refine((arg) => !arg.includes("\0")),
+    )
+    .max(64)
+    .default([]),
+  idleTimeoutMs: z.number().int().min(5000).max(3_600_000).default(300_000),
+  requestTimeoutMs: z.number().int().min(1000).max(120_000).default(15_000),
+});
+
+export type LspServerConfig = z.infer<typeof LspServerSchema>;
+
 export const ConfigSchema = z.object({
   host: z.string().default("127.0.0.1"),
   port: z.number().int().min(0).max(65535).default(8787),
@@ -75,11 +113,14 @@ export const ConfigSchema = z.object({
   shellTimeoutMs: z.number().int().min(100).max(600_000).optional(),
   shellMaxOutputChars: z.number().int().min(1024).max(150_000).optional(),
   allowedCommands: z.array(AllowedCommandRuleSchema).default([]),
+  lspServers: z.array(LspServerSchema).max(8).default([]),
   maxMcpBodyBytes: z.number().int().min(1024).default(1_048_576),
   oauth: OAuthConfigSchema,
 });
 
-export type AppConfig = z.infer<typeof ConfigSchema>;
+export type AppConfig = Omit<z.infer<typeof ConfigSchema>, "lspServers"> & {
+  lspServers?: LspServerConfig[];
+};
 
 export function loadConfig(configPath?: string): AppConfig {
   const filePath = configPath ?? process.env.JUSTNEWMCP_CONFIG;
