@@ -223,9 +223,62 @@ describe("git worktree_enter and worktree_exit tools", () => {
     expect(existsSync(entered.worktreePath)).toBe(true);
     expect(wsState.activeRoot).toBe(repoDir);
 
-    // Clean up kept worktree
-    runGitSync(repoDir, ["worktree", "remove", "--", entered.worktreePath]);
-    runGitSync(repoDir, ["branch", "-d", "--", "feat/keep-me"]);
+    // Reattaching to the kept worktree must succeed and allow subsequent removal
+    const reattached = await worktreeEnterTool(
+      repoDir,
+      [baseDir],
+      wsState,
+      wtState,
+      readTracker,
+      {},
+      { name: "keep-me" },
+    );
+    expect(reattached.reattached).toBe(true);
+    expect(reattached.createdBranch).toBe(false);
+    expect(reattached.branchName).toBe("feat/keep-me");
+    expect(wsState.activeRoot).toBe(entered.worktreePath);
+
+    const removedAfterReattach = await worktreeExitTool(
+      [baseDir],
+      wsState,
+      wtState,
+      readTracker,
+      {},
+      { action: "remove", deleteBranch: true },
+    );
+    expect(removedAfterReattach.action).toBe("removed");
+    expect(removedAfterReattach.branchDeleted).toBe(true);
+    expect(existsSync(entered.worktreePath)).toBe(false);
+
+    // Repository post-checkout hooks must never execute during worktree_enter
+    if (process.platform !== "win32") {
+      const markerPath = join(baseDir, "hook-executed.txt");
+      const hookPath = join(repoDir, ".git", "hooks", "post-checkout");
+      writeFileSync(hookPath, `#!/bin/sh\necho pwned > "${markerPath}"\n`, {
+        encoding: "utf8",
+        mode: 0o755,
+      });
+      const hookWt = await worktreeEnterTool(
+        repoDir,
+        [baseDir],
+        wsState,
+        wtState,
+        readTracker,
+        {},
+        { name: "hook-check" },
+      );
+      expect(existsSync(markerPath)).toBe(false);
+      await worktreeExitTool(
+        [baseDir],
+        wsState,
+        wtState,
+        readTracker,
+        {},
+        { action: "remove", deleteBranch: true },
+      );
+      expect(existsSync(hookWt.worktreePath)).toBe(false);
+      rmSync(hookPath, { force: true });
+    }
 
     // Reject symlinked .justnewmcp/worktrees directory
     const symRepo = join(baseDir, "sym-repo");
@@ -234,7 +287,11 @@ describe("git worktree_enter and worktree_exit tools", () => {
     writeFileSync(join(symRepo, "a.txt"), "a\n", "utf8");
     runGitSync(symRepo, ["add", "a.txt"]);
     runGitSync(symRepo, ["commit", "-m", "init"]);
-    symlinkSync(outsideDir, join(symRepo, ".justnewmcp", "worktrees"));
+    symlinkSync(
+      outsideDir,
+      join(symRepo, ".justnewmcp", "worktrees"),
+      process.platform === "win32" ? "junction" : "dir",
+    );
 
     await initializeWorkspace(symRepo, [baseDir], wsState);
     await expect(

@@ -1,5 +1,12 @@
-import { existsSync, lstatSync, mkdirSync, realpathSync } from "node:fs";
-import { join } from "node:path";
+import {
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  realpathSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 import { generateRandomToken } from "../security/crypto.ts";
 import {
   initializeWorkspace,
@@ -17,6 +24,32 @@ const GIT_TIMEOUT_MS = 30_000;
 const WORKTREE_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 const GIT_BRANCH_RE = /^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$/;
 const GIT_REF_RE = /^[A-Za-z0-9][A-Za-z0-9._^~/-]{0,127}$/;
+
+let cachedEmptyHooksDir: string | null = null;
+
+function getEmptyHooksDir(): string {
+  if (cachedEmptyHooksDir && existsSync(cachedEmptyHooksDir)) {
+    return cachedEmptyHooksDir;
+  }
+  const dir = mkdtempSync(join(tmpdir(), "justnewmcp-empty-hooks-"));
+  cachedEmptyHooksDir = dir;
+  return dir;
+}
+
+function canonicalRealpath(targetPath: string): string {
+  const abs = resolve(targetPath);
+  return typeof realpathSync.native === "function"
+    ? realpathSync.native(abs)
+    : realpathSync(abs);
+}
+
+function pathsMatch(a: string, b: string): boolean {
+  const normA = canonicalRealpath(a).replaceAll("\\", "/");
+  const normB = canonicalRealpath(b).replaceAll("\\", "/");
+  return process.platform === "win32"
+    ? normA.toLowerCase() === normB.toLowerCase()
+    : normA === normB;
+}
 
 export interface ActiveWorktreeSession {
   originalWorkspace: string;
@@ -76,12 +109,22 @@ async function runGit(
   args: string[],
   timeoutMs = GIT_TIMEOUT_MS,
 ): Promise<{ exitCode: number; stdout: string; stderr: string }> {
-  const proc = Bun.spawn(["git", "-c", "core.fsmonitor=false", ...args], {
-    cwd,
-    stdout: "pipe",
-    stderr: "pipe",
-    env: buildSanitizedGitEnv(),
-  });
+  const proc = Bun.spawn(
+    [
+      "git",
+      "-c",
+      "core.fsmonitor=false",
+      "-c",
+      `core.hooksPath=${getEmptyHooksDir()}`,
+      ...args,
+    ],
+    {
+      cwd,
+      stdout: "pipe",
+      stderr: "pipe",
+      env: buildSanitizedGitEnv(),
+    },
+  );
 
   let timedOut = false;
   let killTimer: ReturnType<typeof setTimeout> | undefined;
@@ -113,6 +156,43 @@ async function runGit(
     throw new Error(`git ${args[0] ?? ""} timed out after ${timeoutMs}ms.`);
   }
   return { exitCode, stdout: stdout.trim(), stderr: stderr.trim() };
+}
+
+interface RegisteredWorktree {
+  path: string;
+  branch: string | null;
+}
+
+async function listRegisteredWorktrees(
+  repoRoot: string,
+): Promise<RegisteredWorktree[]> {
+  const res = await runGit(repoRoot, ["worktree", "list", "--porcelain"]);
+  if (res.exitCode !== 0) return [];
+  const entries: RegisteredWorktree[] = [];
+  let currentPath: string | null = null;
+  let currentBranch: string | null = null;
+
+  const flush = () => {
+    if (currentPath) {
+      entries.push({ path: currentPath, branch: currentBranch });
+    }
+    currentPath = null;
+    currentBranch = null;
+  };
+
+  for (const line of res.stdout.split(/\r?\n/)) {
+    if (line.trim() === "") {
+      flush();
+      continue;
+    }
+    if (line.startsWith("worktree ")) {
+      currentPath = line.slice("worktree ".length).trim();
+    } else if (line.startsWith("branch refs/heads/")) {
+      currentBranch = line.slice("branch refs/heads/".length).trim();
+    }
+  }
+  flush();
+  return entries;
 }
 
 function assertNotSymlink(targetPath: string): void {
@@ -184,6 +264,7 @@ export interface WorktreeEnterResult {
   originalWorkspace: string;
   branchName: string;
   createdBranch: boolean;
+  reattached: boolean;
   workspaceInit: WorkspaceInitResult;
 }
 
@@ -216,13 +297,16 @@ export async function worktreeEnterTool(
         `Workspace "${anchoredWorkspace}" is not a git repository.`,
       );
     }
-    const { resolvedPath: canonicalRepoRoot } = resolveInsideRoots(
-      topRes.stdout,
-      allowedRoots,
-    );
+
+    // On Windows, git rev-parse returns the expanded long path while tmpdir/allowedRoots
+    // may use an 8.3 short path (e.g. RUNNER~1). Match canonically before re-resolving.
+    const canonicalRepoRoot = pathsMatch(topRes.stdout, anchoredWorkspace)
+      ? anchoredWorkspace
+      : resolveInsideRoots(topRes.stdout, allowedRoots).resolvedPath;
 
     const slug = validateWorktreeName(opts.name);
-    const branchName = validateBranchName(opts.branch ?? `worktree/${slug}`);
+    const requestedBranch =
+      opts.branch !== undefined ? validateBranchName(opts.branch) : undefined;
     const baseRef = validateBaseRef(opts.baseRef ?? "HEAD");
 
     const metaDir = join(canonicalRepoRoot, ".justnewmcp");
@@ -240,50 +324,80 @@ export async function worktreeEnterTool(
 
     const targetWorktreePath = join(realWorktreesRoot, slug);
     assertNotSymlink(targetWorktreePath);
+
+    let branchName: string;
+    let createdBranch = false;
+    let reattached = false;
+
     if (existsSync(targetWorktreePath)) {
-      throw new Error(
-        `Worktree directory "${slug}" already exists. Choose a different name.`,
+      const registered = await listRegisteredWorktrees(canonicalRepoRoot);
+      const match = registered.find((wt) =>
+        pathsMatch(wt.path, targetWorktreePath),
       );
-    }
-
-    const branchCheck = await runGit(canonicalRepoRoot, [
-      "show-ref",
-      "--verify",
-      "--quiet",
-      `refs/heads/${branchName}`,
-    ]);
-    const branchExists = branchCheck.exitCode === 0;
-
-    let addRes: { exitCode: number; stdout: string; stderr: string };
-    if (branchExists) {
-      if (opts.baseRef !== undefined) {
+      if (!match) {
         throw new Error(
-          `Branch "${branchName}" already exists; omit base_ref when attaching to an existing branch.`,
+          `Worktree directory "${slug}" already exists and is not a registered git worktree.`,
         );
       }
-      addRes = await runGit(canonicalRepoRoot, [
-        "worktree",
-        "add",
-        "--",
-        targetWorktreePath,
-        branchName,
-      ]);
+      if (opts.baseRef !== undefined) {
+        throw new Error(
+          `Cannot specify base_ref when reattaching to existing worktree "${slug}".`,
+        );
+      }
+      if (!match.branch) {
+        throw new Error(
+          `Existing worktree "${slug}" is in detached HEAD state and cannot be reattached by branch.`,
+        );
+      }
+      if (requestedBranch !== undefined && requestedBranch !== match.branch) {
+        throw new Error(
+          `Existing worktree "${slug}" is on branch "${match.branch}", not "${requestedBranch}".`,
+        );
+      }
+      branchName = match.branch;
+      reattached = true;
     } else {
-      addRes = await runGit(canonicalRepoRoot, [
-        "worktree",
-        "add",
-        "-b",
-        branchName,
-        "--",
-        targetWorktreePath,
-        baseRef,
+      branchName = requestedBranch ?? validateBranchName(`worktree/${slug}`);
+      const branchCheck = await runGit(canonicalRepoRoot, [
+        "show-ref",
+        "--verify",
+        "--quiet",
+        `refs/heads/${branchName}`,
       ]);
-    }
+      const branchExists = branchCheck.exitCode === 0;
 
-    if (addRes.exitCode !== 0) {
-      throw new Error(
-        `Failed to create git worktree: ${addRes.stderr || addRes.stdout || `exit ${addRes.exitCode}`}`,
-      );
+      let addRes: { exitCode: number; stdout: string; stderr: string };
+      if (branchExists) {
+        if (opts.baseRef !== undefined) {
+          throw new Error(
+            `Branch "${branchName}" already exists; omit base_ref when attaching to an existing branch.`,
+          );
+        }
+        addRes = await runGit(canonicalRepoRoot, [
+          "worktree",
+          "add",
+          "--",
+          targetWorktreePath,
+          branchName,
+        ]);
+      } else {
+        addRes = await runGit(canonicalRepoRoot, [
+          "worktree",
+          "add",
+          "-b",
+          branchName,
+          "--",
+          targetWorktreePath,
+          baseRef,
+        ]);
+        createdBranch = true;
+      }
+
+      if (addRes.exitCode !== 0) {
+        throw new Error(
+          `Failed to create git worktree: ${addRes.stderr || addRes.stdout || `exit ${addRes.exitCode}`}`,
+        );
+      }
     }
 
     const { resolvedPath: realWorktreePath } = resolveInsideRoots(
@@ -303,7 +417,7 @@ export async function worktreeEnterTool(
       repoRoot: canonicalRepoRoot,
       worktreePath: workspaceInit.workspace,
       branchName,
-      createdBranch: !branchExists,
+      createdBranch,
       createdAt: new Date().toISOString(),
     };
 
@@ -311,7 +425,8 @@ export async function worktreeEnterTool(
       worktreePath: workspaceInit.workspace,
       originalWorkspace: anchoredWorkspace,
       branchName,
-      createdBranch: !branchExists,
+      createdBranch,
+      reattached,
       workspaceInit,
     };
   });
