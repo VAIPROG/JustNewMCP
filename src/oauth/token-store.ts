@@ -163,23 +163,47 @@ export class HashedTokenStore {
         if ((err as NodeJS.ErrnoException).code !== "EEXIST") {
           throw err;
         }
-        let existingPid: number | undefined;
-        try {
-          const raw = readFileSync(this.lockPath, "utf8");
-          const parsed = JSON.parse(raw) as { pid?: unknown };
-          if (typeof parsed.pid === "number") {
-            existingPid = parsed.pid;
+        const readOwnerPid = (): number | undefined => {
+          try {
+            const raw = readFileSync(this.lockPath, "utf8");
+            const parsed = JSON.parse(raw) as { pid?: unknown };
+            return typeof parsed.pid === "number" ? parsed.pid : undefined;
+          } catch {
+            return undefined;
           }
-        } catch {
-          // Malformed or unreadable lock file treated as active unless retried
-        }
+        };
+        const existingPid = readOwnerPid();
         if (
           existingPid !== undefined &&
           existingPid !== process.pid &&
           !isProcessAlive(existingPid)
         ) {
-          rmSync(this.lockPath, { force: true });
-          continue;
+          const reclaimPath = `${this.lockPath}.reclaim`;
+          let reclaimFd: number | undefined;
+          try {
+            reclaimFd = openSync(
+              reclaimPath,
+              fsConstants.O_WRONLY |
+                fsConstants.O_CREAT |
+                fsConstants.O_EXCL |
+                noFollowFlag,
+              0o600,
+            );
+            const recheckedPid = readOwnerPid();
+            if (recheckedPid === existingPid && !isProcessAlive(recheckedPid)) {
+              rmSync(this.lockPath, { force: true });
+              continue;
+            }
+          } catch (reclaimErr) {
+            if ((reclaimErr as NodeJS.ErrnoException).code !== "EEXIST") {
+              throw reclaimErr;
+            }
+          } finally {
+            if (reclaimFd !== undefined) {
+              closeSync(reclaimFd);
+              rmSync(reclaimPath, { force: true });
+            }
+          }
         }
         throw new Error(
           `OAuth token store "${this.filePath}" is already in use by another server instance${existingPid ? ` (PID ${existingPid})` : ""}. Use a distinct oauth.tokenStorePath or set oauth.inMemoryTokens: true.`,
