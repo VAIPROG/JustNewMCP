@@ -139,6 +139,7 @@ export class OAuthServer {
   private readonly accessTokens = new Map<string, TokenRecord>();
   private readonly refreshTokens = new Map<string, TokenRecord>();
   private readonly tokenStore?: HashedTokenStore;
+  private tokenStoreDirty = false;
   private approvalCode: string;
 
   constructor(
@@ -175,7 +176,14 @@ export class OAuthServer {
   }
 
   private persistTokens(now = Date.now()): void {
-    this.tokenStore?.save(this.accessTokens, this.refreshTokens, now);
+    if (!this.tokenStore) return;
+    try {
+      this.tokenStore.save(this.accessTokens, this.refreshTokens, now);
+      this.tokenStoreDirty = false;
+    } catch (err) {
+      this.tokenStoreDirty = true;
+      throw err;
+    }
   }
 
   private resolveIp(req: Request, peerIp?: string): string {
@@ -203,7 +211,7 @@ export class OAuthServer {
         tokensChanged = true;
       }
     }
-    if (tokensChanged) {
+    if (tokensChanged || this.tokenStoreDirty) {
       this.persistTokens(now);
     }
   }
@@ -577,7 +585,7 @@ export class OAuthServer {
         record.expiresAt < Date.now() ||
         record.clientId !== client.clientId
       ) {
-        if (deleted) {
+        if (deleted || this.tokenStoreDirty) {
           this.persistTokens();
         }
         this.rateLimiter.recordFailure(ip);
@@ -625,7 +633,7 @@ export class OAuthServer {
       const hash = sha256Hex(token);
       const removedAccess = this.accessTokens.delete(hash);
       const removedRefresh = this.refreshTokens.delete(hash);
-      if (removedAccess || removedRefresh) {
+      if (removedAccess || removedRefresh || this.tokenStoreDirty) {
         this.persistTokens();
       }
       this.audit.record("oauth.token.revoked", ip, {
