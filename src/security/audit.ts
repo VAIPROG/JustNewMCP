@@ -25,7 +25,11 @@ export class AuditLogger {
 
   constructor(private readonly maxEntries = 1000) {}
 
-  record(event: AuditEventType, ip: string, extra?: { clientId?: string; detail?: string }): AuditEntry {
+  record(
+    event: AuditEventType,
+    ip: string,
+    extra?: { clientId?: string; detail?: string },
+  ): AuditEntry {
     const entry: AuditEntry = {
       timestamp: new Date().toISOString(),
       event,

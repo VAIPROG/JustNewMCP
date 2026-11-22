@@ -1,5 +1,11 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
+import {
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import type { AllowedCommandRule } from "../src/config.ts";
@@ -28,17 +34,29 @@ describe("run_allowed_cmd allowlisted command runner", () => {
       },
     ];
 
-    await expect(runAllowedCmdTool(workspaceDir, rules, { command: "rm", args: ["-rf", "."] })).rejects.toThrow(
-      "not in allowedCommands",
-    );
-    await expect(runAllowedCmdTool(workspaceDir, rules, { command: "/bin/sh", args: ["-c", "id"] })).rejects.toThrow(
-      "bare executable name",
-    );
-    await expect(runAllowedCmdTool(workspaceDir, rules, { command: "git", args: ["push"] })).rejects.toThrow(
-      "not permitted",
-    );
     await expect(
-      runAllowedCmdTool(workspaceDir, rules, { command: "git", args: ["status", "-c", "core.fsmonitor=evil"] }),
+      runAllowedCmdTool(workspaceDir, rules, {
+        command: "rm",
+        args: ["-rf", "."],
+      }),
+    ).rejects.toThrow("not in allowedCommands");
+    await expect(
+      runAllowedCmdTool(workspaceDir, rules, {
+        command: "/bin/sh",
+        args: ["-c", "id"],
+      }),
+    ).rejects.toThrow("bare executable name");
+    await expect(
+      runAllowedCmdTool(workspaceDir, rules, {
+        command: "git",
+        args: ["push"],
+      }),
+    ).rejects.toThrow("not permitted");
+    await expect(
+      runAllowedCmdTool(workspaceDir, rules, {
+        command: "git",
+        args: ["status", "-c", "core.fsmonitor=evil"],
+      }),
     ).rejects.toThrow("not permitted");
   });
 
@@ -67,7 +85,10 @@ describe("run_allowed_cmd allowlisted command runner", () => {
       expect(res.exitCode).toBe(0);
       expect(res.timedOut).toBe(false);
       expect(res.outputTruncated).toBe(false);
-      const parsed = JSON.parse(res.stdout.trim()) as { arg: string; leaked: boolean };
+      const parsed = JSON.parse(res.stdout.trim()) as {
+        arg: string;
+        leaked: boolean;
+      };
       expect(parsed.arg).toBe("hello && echo pwned");
       expect(parsed.leaked).toBe(false);
     } finally {

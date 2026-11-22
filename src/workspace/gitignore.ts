@@ -54,7 +54,9 @@ function compileGitignoreLine(rawLine: string): IgnoreRule | null {
   };
 }
 
-export function loadGitignoreMatcher(workspaceRoot: string): (relPosixPath: string) => boolean {
+export function loadGitignoreMatcher(
+  workspaceRoot: string,
+): (relPosixPath: string) => boolean {
   const gitignorePath = join(workspaceRoot, ".gitignore");
   if (!existsSync(gitignorePath)) {
     return () => false;
@@ -62,7 +64,9 @@ export function loadGitignoreMatcher(workspaceRoot: string): (relPosixPath: stri
 
   let resolvedPath: string;
   try {
-    resolvedPath = resolveInsideRoots(gitignorePath, [workspaceRoot]).resolvedPath;
+    resolvedPath = resolveInsideRoots(gitignorePath, [
+      workspaceRoot,
+    ]).resolvedPath;
     const stat = statSync(resolvedPath);
     if (!stat.isFile() || stat.size > MAX_GITIGNORE_BYTES) {
       return () => false;

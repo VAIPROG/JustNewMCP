@@ -1,7 +1,22 @@
-import { chmodSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import { generateRandomToken } from "../security/crypto.ts";
-import { isEnvSecretPath, isPathInsideRoot, resolveWritablePathInsideRoot } from "./paths.ts";
+import {
+  isEnvSecretPath,
+  isPathInsideRoot,
+  resolveWritablePathInsideRoot,
+} from "./paths.ts";
 
 export interface CheckpointMeta {
   id: string;
@@ -20,7 +35,9 @@ const CHECKPOINT_ID_RE = /^[A-Za-z0-9_-]{8,64}$/;
 function assertNotSymlink(targetPath: string): void {
   try {
     if (lstatSync(targetPath).isSymbolicLink()) {
-      throw new Error(`Checkpoint directory "${targetPath}" must not be a symlink.`);
+      throw new Error(
+        `Checkpoint directory "${targetPath}" must not be a symlink.`,
+      );
     }
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
@@ -47,7 +64,9 @@ function getCheckpointsRoot(workspaceRoot: string, create = false): string {
   if (existsSync(checkpointsRoot)) {
     const realCheckpoints = realpathSync(checkpointsRoot);
     if (!isPathInsideRoot(realCheckpoints, realWorkspace)) {
-      throw new Error("Checkpoint directory resolves outside the active workspace.");
+      throw new Error(
+        "Checkpoint directory resolves outside the active workspace.",
+      );
     }
     return realCheckpoints;
   }
@@ -63,7 +82,9 @@ function pruneOldCheckpoints(checkpointsRoot: string): void {
       const metaPath = join(checkpointsRoot, d.name, "meta.json");
       let createdAt = "";
       try {
-        const meta = JSON.parse(readFileSync(metaPath, "utf8")) as CheckpointMeta;
+        const meta = JSON.parse(
+          readFileSync(metaPath, "utf8"),
+        ) as CheckpointMeta;
         createdAt = meta.createdAt;
       } catch {
         createdAt = "";
@@ -97,10 +118,14 @@ export async function createCheckpoint(
   if (existedBefore) {
     const stat = statSync(resolvedTargetPath);
     if (!stat.isFile()) {
-      throw new Error(`Cannot checkpoint non-file path "${resolvedTargetPath}".`);
+      throw new Error(
+        `Cannot checkpoint non-file path "${resolvedTargetPath}".`,
+      );
     }
     if (stat.size > MAX_SNAPSHOT_BYTES) {
-      throw new Error(`File exceeds maximum checkpoint size of ${MAX_SNAPSHOT_BYTES} bytes.`);
+      throw new Error(
+        `File exceeds maximum checkpoint size of ${MAX_SNAPSHOT_BYTES} bytes.`,
+      );
     }
     sizeBytes = stat.size;
     const bytes = await Bun.file(resolvedTargetPath).bytes();
@@ -115,13 +140,19 @@ export async function createCheckpoint(
     id,
     createdAt: new Date().toISOString(),
     reason,
-    relativePath: relative(workspaceRoot, resolvedTargetPath).replaceAll("\\", "/"),
+    relativePath: relative(workspaceRoot, resolvedTargetPath).replaceAll(
+      "\\",
+      "/",
+    ),
     existedBefore,
     sizeBytes,
   };
 
   const metaPath = join(cpDir, "meta.json");
-  writeFileSync(metaPath, JSON.stringify(meta, null, 2), { encoding: "utf8", mode: 0o600 });
+  writeFileSync(metaPath, JSON.stringify(meta, null, 2), {
+    encoding: "utf8",
+    mode: 0o600,
+  });
   if (process.platform !== "win32") {
     chmodSync(metaPath, 0o600);
   }
@@ -129,7 +160,10 @@ export async function createCheckpoint(
   return meta;
 }
 
-export function listCheckpoints(workspaceRoot: string, limit = 20): CheckpointMeta[] {
+export function listCheckpoints(
+  workspaceRoot: string,
+  limit = 20,
+): CheckpointMeta[] {
   const checkpointsRoot = getCheckpointsRoot(workspaceRoot);
   if (!existsSync(checkpointsRoot)) return [];
 
@@ -147,14 +181,20 @@ export function listCheckpoints(workspaceRoot: string, limit = 20): CheckpointMe
     }
   }
 
-  return metas.sort((a, b) => b.createdAt.localeCompare(a.createdAt)).slice(0, capped);
+  return metas
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+    .slice(0, capped);
 }
 
 export async function rewindCheckpoint(
   workspaceRoot: string,
   checkpointId: string,
   deniedPatterns: string[] = [],
-): Promise<{ checkpointId: string; relativePath: string; action: "restored" | "deleted" }> {
+): Promise<{
+  checkpointId: string;
+  relativePath: string;
+  action: "restored" | "deleted";
+}> {
   if (!CHECKPOINT_ID_RE.test(checkpointId)) {
     throw new Error(`Invalid checkpoint ID "${checkpointId}".`);
   }
@@ -174,7 +214,11 @@ export async function rewindCheckpoint(
         return clean !== ".env" && clean !== ".env.*";
       })
     : deniedPatterns;
-  const targetPath = resolveWritablePathInsideRoot(meta.relativePath, workspaceRoot, effectiveDenied);
+  const targetPath = resolveWritablePathInsideRoot(
+    meta.relativePath,
+    workspaceRoot,
+    effectiveDenied,
+  );
 
   if (!meta.existedBefore) {
     if (existsSync(targetPath)) {
@@ -186,13 +230,19 @@ export async function rewindCheckpoint(
   const snapshotPath = join(cpDir, "snapshot.bin");
   assertNotSymlink(snapshotPath);
   if (!existsSync(snapshotPath)) {
-    throw new Error(`Snapshot payload missing for checkpoint "${checkpointId}".`);
+    throw new Error(
+      `Snapshot payload missing for checkpoint "${checkpointId}".`,
+    );
   }
 
   mkdirSync(dirname(targetPath), { recursive: true });
   const existedBeforeRewind = existsSync(targetPath);
   const bytes = await Bun.file(snapshotPath).bytes();
-  if (!existedBeforeRewind && isEnvSecretPath(targetPath) && process.platform !== "win32") {
+  if (
+    !existedBeforeRewind &&
+    isEnvSecretPath(targetPath) &&
+    process.platform !== "win32"
+  ) {
     writeFileSync(targetPath, bytes, { mode: 0o600 });
     chmodSync(targetPath, 0o600);
   } else {

@@ -9,7 +9,10 @@ import {
 } from "../src/config.ts";
 import { createAppServer, type RunningServer } from "../src/index.ts";
 import { isAllowedRedirectUri } from "../src/oauth/server.ts";
-import { computePkceS256, generateRandomToken } from "../src/security/crypto.ts";
+import {
+  computePkceS256,
+  generateRandomToken,
+} from "../src/security/crypto.ts";
 import { readBodyWithinLimit } from "../src/security/headers.ts";
 
 describe("OAuth 2.1 security hardening and MCP /mcp integration", () => {
@@ -78,14 +81,18 @@ describe("OAuth 2.1 security hardening and MCP /mcp integration", () => {
     expect(health.headers.get("referrer-policy")).toBe("no-referrer");
     expect(health.headers.get("cache-control")).toBe("no-store");
 
-    const asm = await fetch(`${baseUrl}/.well-known/oauth-authorization-server`);
+    const asm = await fetch(
+      `${baseUrl}/.well-known/oauth-authorization-server`,
+    );
     expect(asm.status).toBe(200);
     const asmJson = (await asm.json()) as {
       code_challenge_methods_supported: string[];
       revocation_endpoint: string;
     };
     expect(asmJson.code_challenge_methods_supported).toContain("S256");
-    expect(asmJson.revocation_endpoint).toBe("https://mcp.example.com/oauth/revoke");
+    expect(asmJson.revocation_endpoint).toBe(
+      "https://mcp.example.com/oauth/revoke",
+    );
   });
 
   test("blocks open redirect and enforces exact callback path and query matching", async () => {
@@ -95,13 +102,43 @@ describe("OAuth 2.1 security hardening and MCP /mcp integration", () => {
     );
     expect(res.status).toBe(400);
 
-    const strictAllowlist = ["https://gemini.google.com/oauth/callback", "http://127.0.0.1"];
-    expect(isAllowedRedirectUri("https://gemini.google.com/oauth/callback", strictAllowlist)).toBe(true);
-    expect(isAllowedRedirectUri("https://gemini.google.com/oauth/callback.attacker", strictAllowlist)).toBe(false);
-    expect(isAllowedRedirectUri("https://gemini.google.com/oauth/callback/extra", strictAllowlist)).toBe(false);
-    expect(isAllowedRedirectUri("https://gemini.google.com/oauth/callback?next=evil", strictAllowlist)).toBe(false);
-    expect(isAllowedRedirectUri("https://gemini.google.com/oauth/callback#frag", strictAllowlist)).toBe(false);
-    expect(isAllowedRedirectUri("http://127.0.0.1:43210/cb", strictAllowlist)).toBe(true);
+    const strictAllowlist = [
+      "https://gemini.google.com/oauth/callback",
+      "http://127.0.0.1",
+    ];
+    expect(
+      isAllowedRedirectUri(
+        "https://gemini.google.com/oauth/callback",
+        strictAllowlist,
+      ),
+    ).toBe(true);
+    expect(
+      isAllowedRedirectUri(
+        "https://gemini.google.com/oauth/callback.attacker",
+        strictAllowlist,
+      ),
+    ).toBe(false);
+    expect(
+      isAllowedRedirectUri(
+        "https://gemini.google.com/oauth/callback/extra",
+        strictAllowlist,
+      ),
+    ).toBe(false);
+    expect(
+      isAllowedRedirectUri(
+        "https://gemini.google.com/oauth/callback?next=evil",
+        strictAllowlist,
+      ),
+    ).toBe(false);
+    expect(
+      isAllowedRedirectUri(
+        "https://gemini.google.com/oauth/callback#frag",
+        strictAllowlist,
+      ),
+    ).toBe(false);
+    expect(
+      isAllowedRedirectUri("http://127.0.0.1:43210/cb", strictAllowlist),
+    ).toBe(true);
   });
 
   test("blocks authorize POST without matching CSRF session cookie and rejects oversized or multipart bodies", async () => {
@@ -143,7 +180,10 @@ describe("OAuth 2.1 security hardening and MCP /mcp integration", () => {
         }
       },
     });
-    const req = new Request("http://127.0.0.1/mcp", { method: "POST", body: stream });
+    const req = new Request("http://127.0.0.1/mcp", {
+      method: "POST",
+      body: stream,
+    });
     const result = await readBodyWithinLimit(req, 2048);
     expect(result.ok).toBe(false);
     if (!result.ok) {
@@ -184,7 +224,10 @@ describe("OAuth 2.1 security hardening and MCP /mcp integration", () => {
       const url = `http://127.0.0.1:${directServer.server.port}/oauth/token`;
       const first = await fetch(url, {
         method: "POST",
-        headers: { "Content-Type": "application/x-www-form-urlencoded", "X-Forwarded-For": "1.1.1.1" },
+        headers: {
+          "Content-Type": "application/x-www-form-urlencoded",
+          "X-Forwarded-For": "1.1.1.1",
+        },
         body: new URLSearchParams({
           grant_type: "authorization_code",
           client_id: clientId,
@@ -196,7 +239,10 @@ describe("OAuth 2.1 security hardening and MCP /mcp integration", () => {
 
       const second = await fetch(url, {
         method: "POST",
-        headers: { "Content-Type": "application/x-www-form-urlencoded", "X-Forwarded-For": "2.2.2.2" },
+        headers: {
+          "Content-Type": "application/x-www-form-urlencoded",
+          "X-Forwarded-For": "2.2.2.2",
+        },
         body: new URLSearchParams({
           grant_type: "authorization_code",
           client_id: clientId,
@@ -260,7 +306,10 @@ describe("OAuth 2.1 security hardening and MCP /mcp integration", () => {
   test("rejects unauthenticated /mcp calls with WWW-Authenticate", async () => {
     const res = await fetch(`${baseUrl}/mcp`, {
       method: "POST",
-      headers: { "Content-Type": "application/json", "X-Forwarded-For": "10.0.0.1" },
+      headers: {
+        "Content-Type": "application/json",
+        "X-Forwarded-For": "10.0.0.1",
+      },
       body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "ping" }),
     });
     expect(res.status).toBe(401);
@@ -272,7 +321,10 @@ describe("OAuth 2.1 security hardening and MCP /mcp integration", () => {
     for (let i = 0; i < 2; i += 1) {
       const res = await fetch(`${baseUrl}/oauth/token`, {
         method: "POST",
-        headers: { "Content-Type": "application/x-www-form-urlencoded", "X-Forwarded-For": ip },
+        headers: {
+          "Content-Type": "application/x-www-form-urlencoded",
+          "X-Forwarded-For": ip,
+        },
         body: new URLSearchParams({
           grant_type: "authorization_code",
           client_id: clientId,
@@ -285,7 +337,10 @@ describe("OAuth 2.1 security hardening and MCP /mcp integration", () => {
 
     const locked = await fetch(`${baseUrl}/oauth/token`, {
       method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded", "X-Forwarded-For": ip },
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded",
+        "X-Forwarded-For": ip,
+      },
       body: new URLSearchParams({
         grant_type: "authorization_code",
         client_id: clientId,
@@ -307,7 +362,9 @@ describe("OAuth 2.1 security hardening and MCP /mcp integration", () => {
       `${baseUrl}/oauth/authorize?response_type=code&client_id=${clientId}&redirect_uri=${encodeURIComponent(redirectUri)}&code_challenge=${challenge}&code_challenge_method=S256&state=xyz`,
     );
     expect(getAuth.status).toBe(200);
-    expect(getAuth.headers.get("content-security-policy")).toContain("frame-ancestors 'none'");
+    expect(getAuth.headers.get("content-security-policy")).toContain(
+      "frame-ancestors 'none'",
+    );
 
     const setCookie = getAuth.headers.get("set-cookie") ?? "";
     const cookieMatch = setCookie.match(/justnewmcp_csrf_sid=([^;]+)/);
@@ -348,7 +405,10 @@ describe("OAuth 2.1 security hardening and MCP /mcp integration", () => {
 
     const tokenRes = await fetch(`${baseUrl}/oauth/token`, {
       method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded", "X-Forwarded-For": ip },
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded",
+        "X-Forwarded-For": ip,
+      },
       body: new URLSearchParams({
         grant_type: "authorization_code",
         client_id: clientId,
@@ -359,7 +419,10 @@ describe("OAuth 2.1 security hardening and MCP /mcp integration", () => {
       }),
     });
     expect(tokenRes.status).toBe(200);
-    const tokens = (await tokenRes.json()) as { access_token: string; refresh_token: string };
+    const tokens = (await tokenRes.json()) as {
+      access_token: string;
+      refresh_token: string;
+    };
 
     const badCt = await fetch(`${baseUrl}/mcp`, {
       method: "POST",
@@ -379,7 +442,12 @@ describe("OAuth 2.1 security hardening and MCP /mcp integration", () => {
         Authorization: `Bearer ${tokens.access_token}`,
         "X-Forwarded-For": ip,
       },
-      body: JSON.stringify({ jsonrpc: "2.0", id: 9, method: "ping", params: { pad: "x".repeat(5000) } }),
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 9,
+        method: "ping",
+        params: { pad: "x".repeat(5000) },
+      }),
     });
     expect(oversized.status).toBe(413);
 
@@ -394,17 +462,25 @@ describe("OAuth 2.1 security hardening and MCP /mcp integration", () => {
         jsonrpc: "2.0",
         id: 2,
         method: "tools/call",
-        params: { name: "workspace_init", arguments: { path: join(tempRoot, "repo") } },
+        params: {
+          name: "workspace_init",
+          arguments: { path: join(tempRoot, "repo") },
+        },
       }),
     });
     expect(wsOk.status).toBe(200);
-    const wsOkJson = (await wsOk.json()) as { result: { content: Array<{ text: string }>; isError?: boolean } };
+    const wsOkJson = (await wsOk.json()) as {
+      result: { content: Array<{ text: string }>; isError?: boolean };
+    };
     expect(wsOkJson.result.isError).toBeUndefined();
     expect(wsOkJson.result.content[0]?.text).toContain("README.md");
 
     const revokeRes = await fetch(`${baseUrl}/oauth/revoke`, {
       method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded", "X-Forwarded-For": ip },
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded",
+        "X-Forwarded-For": ip,
+      },
       body: new URLSearchParams({
         client_id: clientId,
         client_secret: clientSecret,

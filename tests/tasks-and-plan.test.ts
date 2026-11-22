@@ -4,7 +4,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ConfigSchema } from "../src/config.ts";
 import { createAppServer } from "../src/index.ts";
-import { computePkceS256, generateRandomToken } from "../src/security/crypto.ts";
+import {
+  computePkceS256,
+  generateRandomToken,
+} from "../src/security/crypto.ts";
 import { PlanMode, TaskManager, type Task } from "../src/workspace/tasks.ts";
 
 describe("TaskManager", () => {
@@ -21,9 +24,15 @@ describe("TaskManager", () => {
     });
     expect(new Date(task.createdAt).toISOString()).toBe(task.createdAt);
 
-    const started = tasks.update(task.id, { status: "in_progress", notes: "Reviewing" });
+    const started = tasks.update(task.id, {
+      status: "in_progress",
+      notes: "Reviewing",
+    });
     const blocked = tasks.update(task.id, { status: "blocked" });
-    const completed = tasks.update(task.id, { title: "Plan approved", status: "completed" });
+    const completed = tasks.update(task.id, {
+      title: "Plan approved",
+      status: "completed",
+    });
 
     expect(started.status).toBe("in_progress");
     expect(blocked.status).toBe("blocked");
@@ -43,18 +52,32 @@ describe("TaskManager", () => {
   test("tracks dependencies and rejects missing tasks and cycles without changing stored tasks", () => {
     const tasks = new TaskManager();
     const first = tasks.create({ title: "First" });
-    const second = tasks.create({ title: "Second", dependencies: [first.id, first.id] });
+    const second = tasks.create({
+      title: "Second",
+      dependencies: [first.id, first.id],
+    });
     const third = tasks.create({ title: "Third", dependencies: [second.id] });
 
     expect(second.dependencies).toEqual([first.id]);
-    expect(() => tasks.create({ title: "Missing prerequisite", dependencies: ["missing"] })).toThrow("Task not found");
-    expect(() => tasks.update(first.id, { dependencies: [first.id] })).toThrow("cycle");
-    expect(() => tasks.update(first.id, { title: "Rejected", dependencies: [third.id] })).toThrow("cycle");
+    expect(() =>
+      tasks.create({
+        title: "Missing prerequisite",
+        dependencies: ["missing"],
+      }),
+    ).toThrow("Task not found");
+    expect(() => tasks.update(first.id, { dependencies: [first.id] })).toThrow(
+      "cycle",
+    );
+    expect(() =>
+      tasks.update(first.id, { title: "Rejected", dependencies: [third.id] }),
+    ).toThrow("cycle");
     expect(tasks.list()).toEqual([first, second, third]);
 
     tasks.get(third.id).dependencies.pop();
     expect(tasks.get(third.id).dependencies).toEqual([second.id]);
-    expect(tasks.update(third.id, { dependencies: [] }).dependencies).toEqual([]);
+    expect(tasks.update(third.id, { dependencies: [] }).dependencies).toEqual(
+      [],
+    );
   });
 
   test("caps task creation at 500 while allowing updates", () => {
@@ -64,20 +87,33 @@ describe("TaskManager", () => {
       tasks.create({ title: `Task ${i + 1}` });
     }
 
-    expect(() => tasks.create({ title: "One too many" })).toThrow("Task limit reached (500 tasks)");
+    expect(() => tasks.create({ title: "One too many" })).toThrow(
+      "Task limit reached (500 tasks)",
+    );
     expect(tasks.list()).toHaveLength(500);
-    expect(tasks.update(first.id, { status: "completed" }).status).toBe("completed");
+    expect(tasks.update(first.id, { status: "completed" }).status).toBe(
+      "completed",
+    );
   });
 });
 
 test("plan mode returns the summary on exit and clears it for the next plan", () => {
   const plan = new PlanMode();
   expect(plan.active).toBe(false);
-  expect(plan.enter("Review the workspace")).toEqual({ active: true, summary: "Review the workspace" });
+  expect(plan.enter("Review the workspace")).toEqual({
+    active: true,
+    summary: "Review the workspace",
+  });
   expect(plan.active).toBe(true);
-  expect(plan.exit()).toEqual({ active: false, summary: "Review the workspace" });
+  expect(plan.exit()).toEqual({
+    active: false,
+    summary: "Review the workspace",
+  });
   expect(plan.enter()).toEqual({ active: true });
-  expect(plan.exit("Review complete")).toEqual({ active: false, summary: "Review complete" });
+  expect(plan.exit("Review complete")).toEqual({
+    active: false,
+    summary: "Review complete",
+  });
   expect(plan.active).toBe(false);
 });
 
@@ -96,12 +132,15 @@ test("authenticated /mcp calls manage tasks and enforce read-only plan mode", as
   const clientSecret = "plan-test-secret-value";
   const approvalCode = "PLAN-1234-5678";
   const redirectUri = "http://127.0.0.1/callback";
-  const running = createAppServer(ConfigSchema.parse({
-    port: 0,
-    publicUrl: "https://mcp.example.com",
-    allowedRoots: [root],
-    oauth: { clientId, clientSecret, allowedRedirectUris: [redirectUri] },
-  }), { initialApprovalCode: approvalCode });
+  const running = createAppServer(
+    ConfigSchema.parse({
+      port: 0,
+      publicUrl: "https://mcp.example.com",
+      allowedRoots: [root],
+      oauth: { clientId, clientSecret, allowedRedirectUris: [redirectUri] },
+    }),
+    { initialApprovalCode: approvalCode },
+  );
   const baseUrl = `http://127.0.0.1:${running.server.port}`;
 
   try {
@@ -118,7 +157,9 @@ test("authenticated /mcp calls manage tasks and enforce read-only plan mode", as
     const form = await fetch(`${baseUrl}/oauth/authorize?${query}`);
     expect(form.status).toBe(200);
 
-    const csrfToken = (await form.text()).match(/name="csrf_token"\s+value="([^"]+)"/)?.[1];
+    const csrfToken = (await form.text()).match(
+      /name="csrf_token"\s+value="([^"]+)"/,
+    )?.[1];
     const cookie = form.headers.get("set-cookie")?.split(";")[0];
     expect(csrfToken).toBeTruthy();
     expect(cookie).toBeTruthy();
@@ -132,7 +173,9 @@ test("authenticated /mcp calls manage tasks and enforce read-only plan mode", as
     });
     expect(approval.status).toBe(302);
 
-    const code = new URL(approval.headers.get("location") ?? "").searchParams.get("code");
+    const code = new URL(
+      approval.headers.get("location") ?? "",
+    ).searchParams.get("code");
     const tokenResponse = await fetch(`${baseUrl}/oauth/token`, {
       method: "POST",
       body: new URLSearchParams({
@@ -145,12 +188,20 @@ test("authenticated /mcp calls manage tasks and enforce read-only plan mode", as
       }),
     });
     expect(tokenResponse.status).toBe(200);
-    const { access_token } = (await tokenResponse.json()) as { access_token: string };
+    const { access_token } = (await tokenResponse.json()) as {
+      access_token: string;
+    };
 
-    const request = async (method: string, params?: Record<string, unknown>) => {
+    const request = async (
+      method: string,
+      params?: Record<string, unknown>,
+    ) => {
       const response = await fetch(`${baseUrl}/mcp`, {
         method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${access_token}` },
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${access_token}`,
+        },
         body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
       });
       expect(response.status).toBe(200);
@@ -160,7 +211,10 @@ test("authenticated /mcp calls manage tasks and enforce read-only plan mode", as
     const call = (name: string, args: Record<string, unknown> = {}) =>
       request("tools/call", { name, arguments: args });
 
-    const result = async <T>(name: string, args?: Record<string, unknown>): Promise<T> => {
+    const result = async <T>(
+      name: string,
+      args?: Record<string, unknown>,
+    ): Promise<T> => {
       const reply = await call(name, args);
       expect(reply.error).toBeUndefined();
       expect(reply.result?.isError).toBeUndefined();
@@ -168,33 +222,51 @@ test("authenticated /mcp calls manage tasks and enforce read-only plan mode", as
     };
 
     const listing = await request("tools/list");
-    expect(listing.result?.tools?.map(({ name }) => name)).toEqual(expect.arrayContaining([
-      "task_create", "task_update", "task_list", "task_get", "plan_enter", "plan_exit",
-    ]));
+    expect(listing.result?.tools?.map(({ name }) => name)).toEqual(
+      expect.arrayContaining([
+        "task_create",
+        "task_update",
+        "task_list",
+        "task_get",
+        "plan_enter",
+        "plan_exit",
+      ]),
+    );
 
     expect(await result("plan_enter")).toEqual({ active: true });
-    const workspace = await result<{ workspace: string }>("workspace_init", { path: root });
-    expect(await result("workspace_info")).toMatchObject({ activeRoot: workspace.workspace });
+    const workspace = await result<{ workspace: string }>("workspace_init", {
+      path: root,
+    });
+    expect(await result("workspace_info")).toMatchObject({
+      activeRoot: workspace.workspace,
+    });
     expect(await result("plan_exit")).toEqual({ active: false });
     const file = "plan.txt";
     const started = Promise.withResolvers<void>();
     const resume = Promise.withResolvers<void>();
     const originalWrite = Bun.write;
-    const writeSpy = spyOn(Bun, "write").mockImplementation(async (path, data) => {
-      if (typeof path !== "string" || typeof data !== "string") {
-        throw new Error("Expected a text write to the workspace.");
-      }
-      started.resolve();
-      await resume.promise;
-      return originalWrite(path, data);
+    const writeSpy = spyOn(Bun, "write").mockImplementation(
+      async (path, data) => {
+        if (typeof path !== "string" || typeof data !== "string") {
+          throw new Error("Expected a text write to the workspace.");
+        }
+        started.resolve();
+        await resume.promise;
+        return originalWrite(path, data);
+      },
+    );
+    const pendingWrite = result<{ checkpointId: string }>("write_file", {
+      path: file,
+      content: "before",
     });
-    const pendingWrite = result<{ checkpointId: string }>("write_file", { path: file, content: "before" });
     try {
       await Promise.race([started.promise, pendingWrite]);
       expect(writeSpy).toHaveBeenCalledTimes(1);
       const prematureEntry = await call("plan_enter");
       expect(prematureEntry.result?.isError).toBe(true);
-      expect(prematureEntry.result?.content?.[0]?.text).toContain("workspace mutation is in progress");
+      expect(prematureEntry.result?.content?.[0]?.text).toContain(
+        "workspace mutation is in progress",
+      );
     } finally {
       resume.resolve();
       writeSpy.mockRestore();
@@ -203,42 +275,77 @@ test("authenticated /mcp calls manage tasks and enforce read-only plan mode", as
     const { checkpointId } = await pendingWrite;
     const checkpoints = await result("checkpoint_list");
 
-    expect(await result("plan_enter", { summary: "Inspect files" })).toEqual({ active: true, summary: "Inspect files" });
-    expect(await result("plan_enter")).toEqual({ active: true, summary: "Inspect files" });
+    expect(await result("plan_enter", { summary: "Inspect files" })).toEqual({
+      active: true,
+      summary: "Inspect files",
+    });
+    expect(await result("plan_enter")).toEqual({
+      active: true,
+      summary: "Inspect files",
+    });
 
     const mutations = [
       ["edit_file", { path: file, old_string: "before", new_string: "after" }],
-      ["multi_edit", { path: file, edits: [{ old_string: "before", new_string: "after" }] }],
+      [
+        "multi_edit",
+        { path: file, edits: [{ old_string: "before", new_string: "after" }] },
+      ],
       ["write_file", { path: file, content: "after" }],
       ["set_env_var", { key: "FLAG", value: "after" }],
       ["checkpoint_rewind", { checkpoint_id: checkpointId }],
       ["run_allowed_cmd", { command: "git", args: ["status"] }],
     ] as const;
 
-    expect(JSON.stringify(await result("read_file", { path: file }))).toContain("before");
-    expect(await result("glob_files", { pattern: "*.txt" })).toMatchObject({ files: [file] });
-    expect(await result("grep_files", { pattern: "before", mode: "files_with_matches" }))
-      .toMatchObject({ matches: [file] });
-    expect(await result("workspace_info")).toMatchObject({ activeRoot: expect.any(String) });
+    expect(JSON.stringify(await result("read_file", { path: file }))).toContain(
+      "before",
+    );
+    expect(await result("glob_files", { pattern: "*.txt" })).toMatchObject({
+      files: [file],
+    });
+    expect(
+      await result("grep_files", {
+        pattern: "before",
+        mode: "files_with_matches",
+      }),
+    ).toMatchObject({ matches: [file] });
+    expect(await result("workspace_info")).toMatchObject({
+      activeRoot: expect.any(String),
+    });
     await result("read_available_envs");
 
     for (const [name, args] of mutations) {
       const { result } = await call(name, args);
       expect(result?.isError).toBe(true);
-      expect(result?.content?.[0]?.text).toContain(`read-only). Call plan_exit before using ${name}`);
+      expect(result?.content?.[0]?.text).toContain(
+        `read-only). Call plan_exit before using ${name}`,
+      );
     }
     expect(await result("checkpoint_list")).toEqual(checkpoints);
     expect(readFileSync(join(root, file), "utf8")).toBe("before");
     expect(readFileSync(join(root, ".env"), "utf8")).toBe("FLAG=before\n");
 
-    const first = await result<Task>("task_create", { title: "x".repeat(300), notes: "x".repeat(10_000) });
-    const second = await result<Task>("task_create", { title: "Apply changes", dependencies: [first.id] });
+    const first = await result<Task>("task_create", {
+      title: "x".repeat(300),
+      notes: "x".repeat(10_000),
+    });
+    const second = await result<Task>("task_create", {
+      title: "Apply changes",
+      dependencies: [first.id],
+    });
     expect(await result("task_list")).toEqual({ tasks: [first, second] });
     expect(await result("task_get", { id: second.id })).toEqual(second);
-    expect(await result("task_update", { id: first.id, status: "completed", notes: "Done" }))
-      .toMatchObject({ id: first.id, status: "completed", notes: "Done" });
+    expect(
+      await result("task_update", {
+        id: first.id,
+        status: "completed",
+        notes: "Done",
+      }),
+    ).toMatchObject({ id: first.id, status: "completed", notes: "Done" });
 
-    const updatedSecond = await result<Task>("task_update", { id: second.id, dependencies: Array(50).fill(first.id) });
+    const updatedSecond = await result<Task>("task_update", {
+      id: second.id,
+      dependencies: Array(50).fill(first.id),
+    });
     expect(updatedSecond.dependencies).toEqual([first.id]);
     const invalidFields = {
       title: "x".repeat(301),
@@ -246,19 +353,32 @@ test("authenticated /mcp calls manage tasks and enforce read-only plan mode", as
       dependencies: Array(51).fill(first.id),
     };
     for (const [field, value] of Object.entries(invalidFields)) {
-      const create = await call("task_create", { title: "Too large", [field]: value });
-      const update = await call("task_update", { id: second.id, [field]: value });
+      const create = await call("task_create", {
+        title: "Too large",
+        [field]: value,
+      });
+      const update = await call("task_update", {
+        id: second.id,
+        [field]: value,
+      });
       expect(create.result?.isError).toBe(true);
       expect(update.result?.isError).toBe(true);
     }
-    expect(await result("task_list")).toMatchObject({ tasks: [{ id: first.id }, updatedSecond] });
+    expect(await result("task_list")).toMatchObject({
+      tasks: [{ id: first.id }, updatedSecond],
+    });
 
-    expect(await result("plan_exit")).toEqual({ active: false, summary: "Inspect files" });
+    expect(await result("plan_exit")).toEqual({
+      active: false,
+      summary: "Inspect files",
+    });
     expect(await result("plan_exit")).toEqual({ active: false });
     await result("write_file", { path: file, content: "after" });
     expect(readFileSync(join(root, file), "utf8")).toBe("after");
 
-    const planEvents = running.audit.list().filter(({ event }) => event.startsWith("mcp.plan."));
+    const planEvents = running.audit
+      .list()
+      .filter(({ event }) => event.startsWith("mcp.plan."));
     expect(planEvents).toMatchObject([
       { event: "mcp.plan.entered", clientId, detail: "plan_enter" },
       { event: "mcp.plan.exited", clientId, detail: "plan_exit" },

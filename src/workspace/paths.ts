@@ -1,23 +1,40 @@
 import { existsSync, lstatSync, realpathSync } from "node:fs";
 import path from "node:path";
 
-export const INTERNAL_PROTECTED_PATTERNS = [".justnewmcp/checkpoints", ".justnewmcp/checkpoints/*"];
-const SAFE_ENV_TEMPLATES = new Set([".env.example", ".env.sample", ".env.template", ".env.dist"]);
+export const INTERNAL_PROTECTED_PATTERNS = [
+  ".justnewmcp/checkpoints",
+  ".justnewmcp/checkpoints/*",
+];
+const SAFE_ENV_TEMPLATES = new Set([
+  ".env.example",
+  ".env.sample",
+  ".env.template",
+  ".env.dist",
+]);
 
-export function isSafeEnvTemplatePath(filePath: string, platform: NodeJS.Platform = process.platform): boolean {
+export function isSafeEnvTemplatePath(
+  filePath: string,
+  platform: NodeJS.Platform = process.platform,
+): boolean {
   const pathLib = platform === "win32" ? path.win32 : path.posix;
   const base = pathLib.basename(filePath).toLowerCase();
   return SAFE_ENV_TEMPLATES.has(base);
 }
 
-export function isEnvSecretPath(filePath: string, platform: NodeJS.Platform = process.platform): boolean {
+export function isEnvSecretPath(
+  filePath: string,
+  platform: NodeJS.Platform = process.platform,
+): boolean {
   const pathLib = platform === "win32" ? path.win32 : path.posix;
   const base = pathLib.basename(filePath).toLowerCase();
   if (SAFE_ENV_TEMPLATES.has(base)) return false;
   return base === ".env" || base.startsWith(".env.");
 }
 
-function normalizeForComparison(filePath: string, platform: NodeJS.Platform): string {
+function normalizeForComparison(
+  filePath: string,
+  platform: NodeJS.Platform,
+): string {
   return platform === "win32" ? filePath.toLowerCase() : filePath;
 }
 
@@ -27,7 +44,10 @@ export function isPathDenied(
   platform: NodeJS.Platform = process.platform,
 ): boolean {
   const pathLib = platform === "win32" ? path.win32 : path.posix;
-  const normalized = pathLib.normalize(filePath).replaceAll("\\", "/").toLowerCase();
+  const normalized = pathLib
+    .normalize(filePath)
+    .replaceAll("\\", "/")
+    .toLowerCase();
   const base = pathLib.basename(filePath).toLowerCase();
 
   const isSafeTemplate = SAFE_ENV_TEMPLATES.has(base);
@@ -59,8 +79,14 @@ export function isPathInsideRoot(
   platform: NodeJS.Platform = process.platform,
 ): boolean {
   const pathLib = platform === "win32" ? path.win32 : path.posix;
-  const normCandidate = normalizeForComparison(pathLib.normalize(candidatePath), platform);
-  const normRoot = normalizeForComparison(pathLib.normalize(rootPath), platform);
+  const normCandidate = normalizeForComparison(
+    pathLib.normalize(candidatePath),
+    platform,
+  );
+  const normRoot = normalizeForComparison(
+    pathLib.normalize(rootPath),
+    platform,
+  );
   const rel = pathLib.relative(normRoot, normCandidate);
   if (rel === "") return true;
   if (rel === ".." || rel.startsWith(`..${pathLib.sep}`)) {
@@ -77,7 +103,10 @@ export function resolveInsideRoots(
 ): { resolvedPath: string; matchedRoot: string } {
   const realTarget = realpathSync(path.resolve(targetPath));
 
-  if (deniedPatterns.length > 0 && isPathDenied(realTarget, deniedPatterns, platform)) {
+  if (
+    deniedPatterns.length > 0 &&
+    isPathDenied(realTarget, deniedPatterns, platform)
+  ) {
     throw new Error(`Path "${targetPath}" is blocked by security policy.`);
   }
 
@@ -103,12 +132,21 @@ export function assertWorkspaceAnchored(
   platform: NodeJS.Platform = process.platform,
 ): string {
   const currentReal = realpathSync(path.resolve(expectedCanonicalRoot));
-  const expectedNorm = normalizeForComparison(path.resolve(expectedCanonicalRoot), platform);
+  const expectedNorm = normalizeForComparison(
+    path.resolve(expectedCanonicalRoot),
+    platform,
+  );
   const currentNorm = normalizeForComparison(currentReal, platform);
   if (currentNorm !== expectedNorm) {
-    throw new Error("Active workspace directory changed or was replaced by a symlink after workspace_init.");
+    throw new Error(
+      "Active workspace directory changed or was replaced by a symlink after workspace_init.",
+    );
   }
-  const { resolvedPath } = resolveInsideRoots(currentReal, allowedRoots, platform);
+  const { resolvedPath } = resolveInsideRoots(
+    currentReal,
+    allowedRoots,
+    platform,
+  );
   return resolvedPath;
 }
 
@@ -148,10 +186,14 @@ export function resolveWritablePathInsideRoot(
       try {
         realTarget = realpathSync(candidate);
       } catch {
-        throw new Error(`Refusing to write through dangling symlink "${inputPath}".`);
+        throw new Error(
+          `Refusing to write through dangling symlink "${inputPath}".`,
+        );
       }
       if (!isPathInsideRoot(realTarget, realRoot, platform)) {
-        throw new Error(`Symlink "${inputPath}" resolves outside the active workspace.`);
+        throw new Error(
+          `Symlink "${inputPath}" resolves outside the active workspace.`,
+        );
       }
       if (isPathDenied(realTarget, combinedDenied, platform)) {
         throw new Error(`Path "${inputPath}" is blocked by security policy.`);
@@ -160,7 +202,9 @@ export function resolveWritablePathInsideRoot(
     }
     const realTarget = realpathSync(candidate);
     if (!isPathInsideRoot(realTarget, realRoot, platform)) {
-      throw new Error(`Path "${inputPath}" resolves outside the active workspace.`);
+      throw new Error(
+        `Path "${inputPath}" resolves outside the active workspace.`,
+      );
     }
     if (isPathDenied(realTarget, combinedDenied, platform)) {
       throw new Error(`Path "${inputPath}" is blocked by security policy.`);
@@ -180,11 +224,16 @@ export function resolveWritablePathInsideRoot(
 
   const realAncestor = realpathSync(ancestor);
   if (!isPathInsideRoot(realAncestor, realRoot, platform)) {
-    throw new Error(`Parent directory of "${inputPath}" resolves outside the active workspace.`);
+    throw new Error(
+      `Parent directory of "${inputPath}" resolves outside the active workspace.`,
+    );
   }
 
   const finalPath = path.join(realAncestor, ...trailingSegments);
-  if (!isPathInsideRoot(finalPath, realRoot, platform) || isPathDenied(finalPath, combinedDenied, platform)) {
+  if (
+    !isPathInsideRoot(finalPath, realRoot, platform) ||
+    isPathDenied(finalPath, combinedDenied, platform)
+  ) {
     throw new Error(`Path "${inputPath}" is blocked by security policy.`);
   }
 
