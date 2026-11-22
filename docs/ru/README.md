@@ -1,6 +1,6 @@
 # JustNewMCP
 
-[English README](../../README.md) · [Архитектура](./architecture.md)
+[English README](../../README.md) · [Архитектура](./architecture.md) · [Гайды](./guides.md)
 
 Удаленный MCP сервер, который превращает любую чат-модель с поддержкой MCP в локального кодинг-агента. Написан на TypeScript под Bun 1.4+ для Linux и Windows, с авторизацией OAuth 2.1 и рабочей моделью по принципам Claude Code.
 
@@ -10,11 +10,11 @@
 
 ## Статус
 
-Первый и второй этапы полностью завершены в `main`: 69 тестов проходят на Linux и Windows, открытых алертов Code Scanning нет.
+Релиз `v0.1.0` объединяет первый и второй этапы в `main`: 71 тест проходит на Linux и Windows, открытых алертов Code Scanning нет.
 
 ### Уже готово в `main`
 
-- **Авторизация OAuth 2.1.** Встроенный сервер на эндпоинтах `/.well-known/oauth-protected-resource`, `/.well-known/oauth-authorization-server`, `/oauth/authorize`, `/oauth/token` и `/oauth/revoke` с PKCE S256, stateless `Bun.CSRF`, точным сравнением callback URI, одноразовыми кодами в файле `0600` на каждый инстанс вне `allowedRoots`, SHA-256 хешированием токенов и rate limit по IP с проверкой доверенных прокси.
+- **Авторизация OAuth 2.1.** Встроенный сервер на эндпоинтах `/.well-known/oauth-protected-resource`, `/.well-known/oauth-authorization-server`, `/oauth/authorize`, `/oauth/token` и `/oauth/revoke` с PKCE S256, поддержкой RFC 9207 `iss` для Google Gemini и OpenAI ChatGPT, stateless `Bun.CSRF`, точным сравнением callback URI, одноразовыми кодами в файле `0600` вне `allowedRoots`, переключателем `inMemoryTokens` для хранения SHA-256 хэшей в памяти или на диске с правами `0600` и rate limit по IP.
 - **Инициализация воркспейса и git worktree.** `workspace_init` и `workspace_info` с привязкой к каноническому корню, защитой от симлинков, безопасным `git status` без `core.fsmonitor` и ограниченным чтением `MEMORY.md` до 25 КБ, плюс `worktree_enter` и `worktree_exit` для изолированных веток в `.justnewmcp/worktrees/` с отключёнными git-хуками и внешними фильтрами.
 - **Файлы, поиск и чекпоинты.** `read_file` с нумерацией строк и проверкой UTF-8 и бинарников, `edit_file` с обязательным чтением до правки, атомарный `multi_edit`, `write_file`, `glob_files` и `grep_files` с поддержкой `.gitignore`, а также `checkpoint_list` и `checkpoint_rewind` с правами `0700` и `0600` на POSIX.
 - **Безопасная работа с `.env`.** Шаблоны вроде `.env.example` читаются по умолчанию. Реальные `.env` закрыты от прямого чтения и обслуживаются через `read_available_envs` с именами и длиной значений, `set_env_var` с многострочным парсером и чекпоинтами, плюс тумблеры `allowEnvReading` и `askHumanAllowance`.

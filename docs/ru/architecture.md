@@ -5,7 +5,7 @@ JustNewMCP это кроссплатформенный MCP сервер на Typ
 ## Авторизация и транспорт
 
 - **Эндпоинт.** Streamable HTTP по адресу `https://<host>/mcp` с заголовком `Mcp-Session-Id` на каждую сессию и поддержкой SSE-уведомлений `notifications/tools/list_changed`.
-- **OAuth 2.1.** Встроенные эндпоинты `/.well-known/oauth-protected-resource`, `/.well-known/oauth-authorization-server`, `/oauth/authorize`, `/oauth/token` и `/oauth/revoke` с поддержкой PKCE S256 и stateless `Bun.CSRF`.
+- **OAuth 2.1.** Встроенные эндпоинты `/.well-known/oauth-protected-resource`, `/.well-known/oauth-authorization-server`, `/oauth/authorize`, `/oauth/token` и `/oauth/revoke` с поддержкой PKCE S256, RFC 9207 `iss` для Google Gemini и OpenAI ChatGPT, stateless `Bun.CSRF` и `HashedTokenStore`, который сохраняет SHA-256 хэши токенов в файл `0600` вне `allowedRoots`, если не включён `oauth.inMemoryTokens: true`.
 - **Защита от перебора.** Секреты и токены сравниваются через `crypto.timingSafeEqual`, на ошибочные запросы действует ограничение по IP с учетом доверенных прокси, а одноразовый код подтверждения пишется в локальный файл с правами `0600` на каждый инстанс вне `allowedRoots` и не попадает в stdout.
 
 ## Основные модули

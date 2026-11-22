@@ -5,7 +5,7 @@ JustNewMCP is a cross-platform MCP server written in TypeScript for Bun 1.4+, ta
 ## Authentication and transport
 
 - **Endpoint.** Streamable HTTP at `https://<host>/mcp` with per-session `Mcp-Session-Id` headers and SSE `notifications/tools/list_changed` support.
-- **OAuth 2.1.** Built-in discovery at `/.well-known/oauth-protected-resource` and `/.well-known/oauth-authorization-server`, plus `/oauth/authorize`, `/oauth/token`, and `/oauth/revoke` with PKCE S256 and stateless `Bun.CSRF` protection.
+- **OAuth 2.1.** Built-in discovery at `/.well-known/oauth-protected-resource` and `/.well-known/oauth-authorization-server`, plus `/oauth/authorize`, `/oauth/token`, and `/oauth/revoke` with PKCE S256, RFC 9207 `iss` callback validation for Gemini and OpenAI ChatGPT, stateless `Bun.CSRF` protection, and `HashedTokenStore` persisting SHA-256 token hashes in a `0600` file outside `allowedRoots` unless `oauth.inMemoryTokens` is `true`.
 - **Brute-force protection.** Secrets and tokens compare with `crypto.timingSafeEqual`, backed by trusted-proxy IP rate limiting and one-time approval codes written to a per-instance `0600` file outside `allowedRoots` rather than printed to stdout.
 
 ## Core modules
