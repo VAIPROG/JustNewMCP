@@ -1,8 +1,12 @@
 import {
   chmodSync,
+  closeSync,
+  constants as fsConstants,
   existsSync,
+  fchmodSync,
   lstatSync,
   mkdirSync,
+  openSync,
   readdirSync,
   readFileSync,
   realpathSync,
@@ -236,15 +240,22 @@ export async function rewindCheckpoint(
   }
 
   mkdirSync(dirname(targetPath), { recursive: true });
-  const existedBeforeRewind = existsSync(targetPath);
   const bytes = await Bun.file(snapshotPath).bytes();
-  if (
-    !existedBeforeRewind &&
-    isEnvSecretPath(targetPath) &&
-    process.platform !== "win32"
-  ) {
-    writeFileSync(targetPath, bytes, { mode: 0o600 });
-    chmodSync(targetPath, 0o600);
+  if (isEnvSecretPath(targetPath) && process.platform !== "win32") {
+    const fd = openSync(
+      targetPath,
+      fsConstants.O_WRONLY |
+        fsConstants.O_CREAT |
+        fsConstants.O_TRUNC |
+        fsConstants.O_NOFOLLOW,
+      0o600,
+    );
+    try {
+      fchmodSync(fd, 0o600);
+      writeFileSync(fd, bytes);
+    } finally {
+      closeSync(fd);
+    }
   } else {
     await Bun.write(targetPath, bytes);
   }

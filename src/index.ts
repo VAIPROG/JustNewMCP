@@ -1,9 +1,22 @@
+import {
+  closeSync,
+  constants as fsConstants,
+  existsSync,
+  fchmodSync,
+  mkdirSync,
+  openSync,
+  realpathSync,
+  writeFileSync,
+} from "node:fs";
+import { homedir } from "node:os";
+import { basename, dirname, join, resolve } from "node:path";
 import { loadConfig, type AppConfig } from "./config.ts";
 import { McpRouter } from "./mcp/server.ts";
 import { OAuthServer } from "./oauth/server.ts";
 import { ensureBunVersion } from "./runtime/bun-version.ts";
 import { AuditLogger } from "./security/audit.ts";
 import { withSecurityHeaders } from "./security/headers.ts";
+import { isPathInsideRoot } from "./workspace/paths.ts";
 
 export interface RunningServer {
   server: ReturnType<typeof Bun.serve>;
@@ -15,6 +28,67 @@ export interface RunningServer {
 export interface CreateServerOptions {
   initialApprovalCode?: string;
   onApprovalCodeRotated?: (code: string) => void;
+}
+
+function canonicalizeCandidatePath(filePath: string): string {
+  const abs = resolve(filePath);
+  if (existsSync(abs)) {
+    return realpathSync(abs);
+  }
+  const trailing: string[] = [];
+  let cursor = abs;
+  while (!existsSync(cursor)) {
+    const parent = dirname(cursor);
+    if (parent === cursor) break;
+    trailing.unshift(basename(cursor));
+    cursor = parent;
+  }
+  const realBase = existsSync(cursor) ? realpathSync(cursor) : cursor;
+  return join(realBase, ...trailing);
+}
+
+export function assertApprovalCodeFileOutsideAllowedRoots(
+  filePath: string,
+  allowedRoots: string[],
+  platform: NodeJS.Platform = process.platform,
+): string {
+  const canonicalTarget = canonicalizeCandidatePath(filePath);
+  for (const root of allowedRoots) {
+    const canonicalRoot = existsSync(resolve(root))
+      ? realpathSync(resolve(root))
+      : resolve(root);
+    if (isPathInsideRoot(canonicalTarget, canonicalRoot, platform)) {
+      throw new Error(
+        `Approval code file "${filePath}" must reside outside configured allowedRoots.`,
+      );
+    }
+  }
+  return canonicalTarget;
+}
+
+function writeApprovalCodeFile(filePath: string, code: string): void {
+  const dir = dirname(filePath);
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  const noFollowFlag =
+    process.platform !== "win32" && typeof fsConstants.O_NOFOLLOW === "number"
+      ? fsConstants.O_NOFOLLOW
+      : 0;
+  const fd = openSync(
+    filePath,
+    fsConstants.O_WRONLY |
+      fsConstants.O_CREAT |
+      fsConstants.O_TRUNC |
+      noFollowFlag,
+    0o600,
+  );
+  try {
+    if (process.platform !== "win32") {
+      fchmodSync(fd, 0o600);
+    }
+    writeFileSync(fd, `${code}\n`, "utf8");
+  } finally {
+    closeSync(fd);
+  }
 }
 
 export function createAppServer(
@@ -78,13 +152,36 @@ export function createAppServer(
 if (import.meta.main) {
   const bunVersion = ensureBunVersion("1.4.0");
   const config = loadConfig();
+  const configuredApprovalPath = process.env.JUSTNEWMCP_APPROVAL_CODE_FILE;
+  let approvalCodeFile = configuredApprovalPath
+    ? assertApprovalCodeFileOutsideAllowedRoots(
+        configuredApprovalPath,
+        config.allowedRoots,
+      )
+    : "";
   const { server, oauth } = createAppServer(config, {
     onApprovalCodeRotated(code) {
-      console.log(`Rotated one-time OAuth approval code: ${code}`);
+      writeApprovalCodeFile(approvalCodeFile, code);
+      console.log(
+        `Rotated one-time OAuth approval code written to ${approvalCodeFile}`,
+      );
     },
   });
+  if (!approvalCodeFile) {
+    approvalCodeFile = assertApprovalCodeFileOutsideAllowedRoots(
+      join(
+        homedir(),
+        ".justnewmcp",
+        `approval-code-${server.port}-${process.pid}`,
+      ),
+      config.allowedRoots,
+    );
+  }
+  writeApprovalCodeFile(approvalCodeFile, oauth.getApprovalCode());
   console.log(
     `JustNewMCP listening on http://${server.hostname}:${server.port} (Bun ${bunVersion})`,
   );
-  console.log(`One-time OAuth approval code: ${oauth.getApprovalCode()}`);
+  console.log(
+    `One-time OAuth approval code written to ${approvalCodeFile} (mode 0600)`,
+  );
 }
