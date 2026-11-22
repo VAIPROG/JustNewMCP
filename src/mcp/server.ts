@@ -39,6 +39,7 @@ import {
   createWorktreeState,
   worktreeEnterTool,
   worktreeExitTool,
+  type WorktreeState,
 } from "../workspace/worktree.ts";
 
 interface JsonRpcRequest {
@@ -409,7 +410,7 @@ const TOOL_DEFINITIONS = [
   {
     name: "glob_files",
     description:
-      "Find files matching a glob pattern inside the active workspace, sorted by modification time.",
+      "Find files matching a glob pattern inside the active workspace (or directories when pattern ends with '/'), sorted by modification time.",
     inputSchema: {
       type: "object",
       properties: {
@@ -673,13 +674,16 @@ const RUN_SHELL_TOOL_DEFINITION = {
   },
 };
 
+const MAX_SESSION_CONTEXTS = 200;
+
+interface SessionWorkspaceContext {
+  workspaceState: WorkspaceState;
+  worktreeState: WorktreeState;
+  readTracker: Set<string>;
+}
+
 export class McpRouter {
-  private readonly workspaceState: WorkspaceState = {
-    activeRoot: null,
-    matchedAllowedRoot: null,
-  };
-  private readonly worktreeState = createWorktreeState();
-  private readonly readTracker = new Set<string>();
+  private readonly sessionContexts = new Map<string, SessionWorkspaceContext>();
   private readonly tasks = new TaskManager();
   private readonly backgroundJobs = new BackgroundJobManager();
   private readonly plan = new PlanMode();
@@ -714,7 +718,29 @@ export class McpRouter {
     return this.lsp.shutdown();
   }
 
+  private getSessionContext(sessionKey: string): SessionWorkspaceContext {
+    const existing = this.sessionContexts.get(sessionKey);
+    if (existing) {
+      this.sessionContexts.delete(sessionKey);
+      this.sessionContexts.set(sessionKey, existing);
+      return existing;
+    }
+    const created: SessionWorkspaceContext = {
+      workspaceState: { activeRoot: null, matchedAllowedRoot: null },
+      worktreeState: createWorktreeState(),
+      readTracker: new Set<string>(),
+    };
+    this.sessionContexts.set(sessionKey, created);
+    while (this.sessionContexts.size > MAX_SESSION_CONTEXTS) {
+      const oldest = this.sessionContexts.keys().next().value;
+      if (oldest === undefined) break;
+      this.sessionContexts.delete(oldest);
+    }
+    return created;
+  }
+
   private async changeWorkspace<T>(
+    ctx: SessionWorkspaceContext,
     change: () => Promise<T>,
     closeBefore = false,
   ): Promise<T> {
@@ -722,13 +748,13 @@ export class McpRouter {
       throw new Error("A workspace change is already in progress.");
     this.workspaceChanging = true;
     this.workspaceRevision++;
-    const previous = this.workspaceState.activeRoot;
+    const previous = ctx.workspaceState.activeRoot;
     try {
       if (closeBefore) await this.lsp.reset();
       return await change();
     } finally {
       try {
-        if (!closeBefore && this.workspaceState.activeRoot !== previous)
+        if (!closeBefore && ctx.workspaceState.activeRoot !== previous)
           await this.lsp.reset();
       } finally {
         this.workspaceChanging = false;
@@ -736,27 +762,30 @@ export class McpRouter {
     }
   }
 
-  private async runLsp<T>(operation: (root: string) => Promise<T>): Promise<T> {
+  private async runLsp<T>(
+    ctx: SessionWorkspaceContext,
+    operation: (root: string) => Promise<T>,
+  ): Promise<T> {
     if (this.workspaceChanging)
       throw new Error("A workspace change is in progress.");
     const revision = this.workspaceRevision;
-    const root = this.requireActiveWorkspace();
+    const root = this.requireActiveWorkspace(ctx);
     const result = await operation(root);
     if (
       revision !== this.workspaceRevision ||
-      root !== this.requireActiveWorkspace()
+      root !== this.requireActiveWorkspace(ctx)
     ) {
       throw new Error("Active workspace changed during the LSP request.");
     }
     return result;
   }
 
-  private requireActiveWorkspace(): string {
-    if (!this.workspaceState.activeRoot) {
+  private requireActiveWorkspace(ctx: SessionWorkspaceContext): string {
+    if (!ctx.workspaceState.activeRoot) {
       throw new Error("No active workspace. Call workspace_init first.");
     }
     return assertWorkspaceAnchored(
-      this.workspaceState.activeRoot,
+      ctx.workspaceState.activeRoot,
       this.config.allowedRoots,
     );
   }
@@ -947,6 +976,7 @@ export class McpRouter {
     clientId: string,
     sessionKey: string,
   ): Promise<unknown | null> {
+    const ctx = this.getSessionContext(sessionKey);
     if (name === "tool_search") {
       const parsed = ToolSearchArgs.parse(args);
       const result = this.toolRegistry.search(parsed, sessionKey);
@@ -999,22 +1029,22 @@ export class McpRouter {
 
     if (name === "workspace_init") {
       const parsed = WorkspaceInitArgs.parse(args);
-      return this.changeWorkspace(async () => {
-        this.readTracker.clear();
+      return this.changeWorkspace(ctx, async () => {
+        ctx.readTracker.clear();
         const result = await initializeWorkspace(
           parsed.path,
           this.config.allowedRoots,
-          this.workspaceState,
+          ctx.workspaceState,
           {
             deniedPatterns: this.config.deniedPathPatterns,
             memoryDir: this.config.memoryDir,
           },
         );
         if (
-          this.worktreeState.active &&
-          this.worktreeState.active.worktreePath !== result.workspace
+          ctx.worktreeState.active &&
+          ctx.worktreeState.active.worktreePath !== result.workspace
         ) {
-          this.worktreeState.active = null;
+          ctx.worktreeState.active = null;
         }
         return result;
       });
@@ -1023,7 +1053,7 @@ export class McpRouter {
     if (name === "lsp_diagnostics") {
       const { path, max_items } = LspDiagnosticsArgs.parse(args);
       return {
-        diagnostics: await this.runLsp((root) =>
+        diagnostics: await this.runLsp(ctx, (root) =>
           this.lsp.diagnostics(root, path, max_items),
         ),
       };
@@ -1032,7 +1062,7 @@ export class McpRouter {
     if (name === "lsp_definition") {
       const { path, line, character } = LspPositionArgs.parse(args);
       return {
-        locations: await this.runLsp((root) =>
+        locations: await this.runLsp(ctx, (root) =>
           this.lsp.navigate(root, "definition", path, line, character, 100),
         ),
       };
@@ -1042,7 +1072,7 @@ export class McpRouter {
       const { path, line, character, max_results, include_declaration } =
         LspReferencesArgs.parse(args);
       return {
-        locations: await this.runLsp((root) =>
+        locations: await this.runLsp(ctx, (root) =>
           this.lsp.navigate(
             root,
             "references",
@@ -1058,21 +1088,21 @@ export class McpRouter {
 
     if (name === "workspace_info") {
       return {
-        activeRoot: this.workspaceState.activeRoot,
-        matchedAllowedRoot: this.workspaceState.matchedAllowedRoot,
-        activeWorktree: this.worktreeState.active,
+        activeRoot: ctx.workspaceState.activeRoot,
+        matchedAllowedRoot: ctx.workspaceState.matchedAllowedRoot,
+        activeWorktree: ctx.worktreeState.active,
         allowedRoots: this.config.allowedRoots,
         deniedPathPatterns: this.config.deniedPathPatterns,
       };
     }
 
     if (name === "read_file") {
-      const root = this.requireActiveWorkspace();
+      const root = this.requireActiveWorkspace(ctx);
       const parsed = ReadFileArgs.parse(args);
       const res = await readFileTool(
         root,
         this.config.deniedPathPatterns,
-        this.readTracker,
+        ctx.readTracker,
         {
           path: parsed.path,
           offset: parsed.offset,
@@ -1094,7 +1124,7 @@ export class McpRouter {
     }
 
     if (name === "read_available_envs") {
-      const root = this.requireActiveWorkspace();
+      const root = this.requireActiveWorkspace(ctx);
       const parsed = ReadAvailableEnvsArgs.parse(args);
       return readAvailableEnvsTool(
         root,
@@ -1104,18 +1134,18 @@ export class McpRouter {
     }
 
     if (name === "set_env_var") {
-      const root = this.requireActiveWorkspace();
+      const root = this.requireActiveWorkspace(ctx);
       const parsed = SetEnvVarArgs.parse(args);
       return setEnvVarTool(root, this.config.deniedPathPatterns, parsed);
     }
 
     if (name === "edit_file") {
-      const root = this.requireActiveWorkspace();
+      const root = this.requireActiveWorkspace(ctx);
       const parsed = EditFileArgs.parse(args);
       return applyEditsTool(
         root,
         this.config.deniedPathPatterns,
-        this.readTracker,
+        ctx.readTracker,
         parsed.path,
         [
           {
@@ -1128,31 +1158,31 @@ export class McpRouter {
     }
 
     if (name === "multi_edit") {
-      const root = this.requireActiveWorkspace();
+      const root = this.requireActiveWorkspace(ctx);
       const parsed = MultiEditArgs.parse(args);
       return applyEditsTool(
         root,
         this.config.deniedPathPatterns,
-        this.readTracker,
+        ctx.readTracker,
         parsed.path,
         parsed.edits,
       );
     }
 
     if (name === "write_file") {
-      const root = this.requireActiveWorkspace();
+      const root = this.requireActiveWorkspace(ctx);
       const parsed = WriteFileArgs.parse(args);
       return writeFileTool(
         root,
         this.config.deniedPathPatterns,
-        this.readTracker,
+        ctx.readTracker,
         parsed.path,
         parsed.content,
       );
     }
 
     if (name === "glob_files") {
-      const root = this.requireActiveWorkspace();
+      const root = this.requireActiveWorkspace(ctx);
       const parsed = GlobFilesArgs.parse(args);
       return globFilesTool(
         root,
@@ -1163,7 +1193,7 @@ export class McpRouter {
     }
 
     if (name === "grep_files") {
-      const root = this.requireActiveWorkspace();
+      const root = this.requireActiveWorkspace(ctx);
       const parsed = GrepFilesArgs.parse(args);
       return grepFilesTool(root, this.config.deniedPathPatterns, {
         pattern: parsed.pattern,
@@ -1176,13 +1206,13 @@ export class McpRouter {
     }
 
     if (name === "checkpoint_list") {
-      const root = this.requireActiveWorkspace();
+      const root = this.requireActiveWorkspace(ctx);
       const parsed = CheckpointListArgs.parse(args);
       return { checkpoints: listCheckpoints(root, parsed.limit) };
     }
 
     if (name === "checkpoint_rewind") {
-      const root = this.requireActiveWorkspace();
+      const root = this.requireActiveWorkspace(ctx);
       const parsed = CheckpointRewindArgs.parse(args);
       return rewindCheckpoint(
         root,
@@ -1192,7 +1222,7 @@ export class McpRouter {
     }
 
     if (name === "run_allowed_cmd") {
-      const root = this.requireActiveWorkspace();
+      const root = this.requireActiveWorkspace(ctx);
       const parsed = RunAllowedCmdArgs.parse(args);
       const result = await runAllowedCmdTool(
         root,
@@ -1236,7 +1266,7 @@ export class McpRouter {
     }
 
     if (name === "memory_read") {
-      const root = this.requireActiveWorkspace();
+      const root = this.requireActiveWorkspace(ctx);
       const parsed = MemoryReadArgs.parse(args);
       return memoryReadTool(root, this.config.memoryDir, {
         ...parsed,
@@ -1245,7 +1275,7 @@ export class McpRouter {
     }
 
     if (name === "memory_write") {
-      const root = this.requireActiveWorkspace();
+      const root = this.requireActiveWorkspace(ctx);
       const parsed = MemoryWriteArgs.parse(args);
       return memoryWriteTool(root, this.config.memoryDir, {
         ...parsed,
@@ -1254,7 +1284,7 @@ export class McpRouter {
     }
 
     if (name === "memory_search") {
-      const root = this.requireActiveWorkspace();
+      const root = this.requireActiveWorkspace(ctx);
       const parsed = MemorySearchArgs.parse(args);
       return memorySearchTool(root, this.config.memoryDir, {
         pattern: parsed.pattern,
@@ -1265,15 +1295,15 @@ export class McpRouter {
     }
 
     if (name === "worktree_enter") {
-      const root = this.requireActiveWorkspace();
+      const root = this.requireActiveWorkspace(ctx);
       const parsed = WorktreeEnterArgs.parse(args);
-      return this.changeWorkspace(() =>
+      return this.changeWorkspace(ctx, () =>
         worktreeEnterTool(
           root,
           this.config.allowedRoots,
-          this.workspaceState,
-          this.worktreeState,
-          this.readTracker,
+          ctx.workspaceState,
+          ctx.worktreeState,
+          ctx.readTracker,
           {
             deniedPatterns: this.config.deniedPathPatterns,
             memoryDir: this.config.memoryDir,
@@ -1293,7 +1323,7 @@ export class McpRouter {
           "run_shell is disabled. Set allowShell: true in config to enable.",
         );
       }
-      const root = this.requireActiveWorkspace();
+      const root = this.requireActiveWorkspace(ctx);
       const parsed = RunShellArgs.parse(args);
       const maxTimeoutMs = this.config.shellTimeoutMs ?? 30_000;
       const timeoutMs = Math.min(
@@ -1316,12 +1346,13 @@ export class McpRouter {
     if (name === "worktree_exit") {
       const parsed = WorktreeExitArgs.parse(args);
       return this.changeWorkspace(
+        ctx,
         () =>
           worktreeExitTool(
             this.config.allowedRoots,
-            this.workspaceState,
-            this.worktreeState,
-            this.readTracker,
+            ctx.workspaceState,
+            ctx.worktreeState,
+            ctx.readTracker,
             {
               deniedPatterns: this.config.deniedPathPatterns,
               memoryDir: this.config.memoryDir,

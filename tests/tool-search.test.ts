@@ -244,6 +244,26 @@ describe("on-demand tool_search and deferred tool activation", () => {
       expect(blockedInB.isError).toBe(true);
       expect(blockedInB.content?.[0]?.text).toContain("tool_search");
 
+      // Workspace isolation: Session A and Session B maintain independent activeRoot values
+      const repoB = join(baseDir, "repo-b");
+      mkdirSync(repoB, { recursive: true });
+      await client.call(
+        "workspace_init",
+        { path: workspaceDir },
+        initA.sessionId,
+      );
+      await client.call("workspace_init", { path: repoB }, initB.sessionId);
+      const infoA = JSON.parse(
+        (await client.call("workspace_info", {}, initA.sessionId)).content?.[0]
+          ?.text ?? "{}",
+      ) as { activeRoot: string };
+      const infoB = JSON.parse(
+        (await client.call("workspace_info", {}, initB.sessionId)).content?.[0]
+          ?.text ?? "{}",
+      ) as { activeRoot: string };
+      expect(infoA.activeRoot).toBe(workspaceDir);
+      expect(infoB.activeRoot).toBe(repoB);
+
       const createdTask = await client.call("task_create", {
         title: "After activation",
       });
