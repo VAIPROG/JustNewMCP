@@ -44,11 +44,15 @@ function canonicalRealpath(targetPath: string): string {
 }
 
 function pathsMatch(a: string, b: string): boolean {
-  const normA = canonicalRealpath(a).replaceAll("\\", "/");
-  const normB = canonicalRealpath(b).replaceAll("\\", "/");
-  return process.platform === "win32"
-    ? normA.toLowerCase() === normB.toLowerCase()
-    : normA === normB;
+  try {
+    const normA = canonicalRealpath(a).replaceAll("\\", "/");
+    const normB = canonicalRealpath(b).replaceAll("\\", "/");
+    return process.platform === "win32"
+      ? normA.toLowerCase() === normB.toLowerCase()
+      : normA === normB;
+  } catch {
+    return false;
+  }
 }
 
 export interface ActiveWorktreeSession {
@@ -161,6 +165,25 @@ async function runGit(
 interface RegisteredWorktree {
   path: string;
   branch: string | null;
+}
+
+async function buildFilterDisableFlags(repoRoot: string): Promise<string[]> {
+  const res = await runGit(repoRoot, [
+    "config",
+    "--name-only",
+    "--get-regexp",
+    "^filter\\..*\\.(smudge|clean|process)$",
+  ]);
+  if (res.exitCode !== 0 || !res.stdout) return [];
+  const flags: string[] = [];
+  const seen = new Set<string>();
+  for (const rawKey of res.stdout.split(/\r?\n/)) {
+    const key = rawKey.trim();
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    flags.push("-c", `${key}=`);
+  }
+  return flags;
 }
 
 async function listRegisteredWorktrees(
@@ -366,6 +389,8 @@ export async function worktreeEnterTool(
       ]);
       const branchExists = branchCheck.exitCode === 0;
 
+      const filterDisableFlags =
+        await buildFilterDisableFlags(canonicalRepoRoot);
       let addRes: { exitCode: number; stdout: string; stderr: string };
       if (branchExists) {
         if (opts.baseRef !== undefined) {
@@ -374,6 +399,7 @@ export async function worktreeEnterTool(
           );
         }
         addRes = await runGit(canonicalRepoRoot, [
+          ...filterDisableFlags,
           "worktree",
           "add",
           "--",
@@ -382,6 +408,7 @@ export async function worktreeEnterTool(
         ]);
       } else {
         addRes = await runGit(canonicalRepoRoot, [
+          ...filterDisableFlags,
           "worktree",
           "add",
           "-b",

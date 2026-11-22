@@ -278,7 +278,100 @@ describe("git worktree_enter and worktree_exit tools", () => {
       );
       expect(existsSync(hookWt.worktreePath)).toBe(false);
       rmSync(hookPath, { force: true });
+
+      // External smudge filters must never execute during worktree_enter
+      const filterMarker = join(baseDir, "filter-executed.txt");
+      writeFileSync(
+        join(repoDir, ".gitattributes"),
+        "*.md filter=evil\n",
+        "utf8",
+      );
+      runGitSync(repoDir, ["add", ".gitattributes"]);
+      runGitSync(repoDir, ["commit", "-m", "add gitattributes"]);
+      runGitSync(repoDir, [
+        "config",
+        "filter.evil.smudge",
+        `sh -c 'echo pwned > "${filterMarker}"; cat'`,
+      ]);
+      const filterWt = await worktreeEnterTool(
+        repoDir,
+        [baseDir],
+        wsState,
+        wtState,
+        readTracker,
+        {},
+        { name: "filter-check" },
+      );
+      expect(existsSync(filterMarker)).toBe(false);
+      await worktreeExitTool(
+        [baseDir],
+        wsState,
+        wtState,
+        readTracker,
+        {},
+        { action: "remove", deleteBranch: true },
+      );
+      expect(existsSync(filterWt.worktreePath)).toBe(false);
+      runGitSync(repoDir, ["config", "--unset", "filter.evil.smudge"]);
     }
+
+    // Missing unpruned sibling worktree must not break reattaching to another kept worktree
+    const wtA = await worktreeEnterTool(
+      repoDir,
+      [baseDir],
+      wsState,
+      wtState,
+      readTracker,
+      {},
+      { name: "aaa", branch: "feat/aaa" },
+    );
+    await worktreeExitTool(
+      [baseDir],
+      wsState,
+      wtState,
+      readTracker,
+      {},
+      { action: "keep" },
+    );
+    const wtZ = await worktreeEnterTool(
+      repoDir,
+      [baseDir],
+      wsState,
+      wtState,
+      readTracker,
+      {},
+      { name: "zzz", branch: "feat/zzz" },
+    );
+    await worktreeExitTool(
+      [baseDir],
+      wsState,
+      wtState,
+      readTracker,
+      {},
+      { action: "keep" },
+    );
+    rmSync(wtA.worktreePath, { recursive: true, force: true });
+    const reattachedZ = await worktreeEnterTool(
+      repoDir,
+      [baseDir],
+      wsState,
+      wtState,
+      readTracker,
+      {},
+      { name: "zzz" },
+    );
+    expect(reattachedZ.reattached).toBe(true);
+    expect(reattachedZ.worktreePath).toBe(wtZ.worktreePath);
+    await worktreeExitTool(
+      [baseDir],
+      wsState,
+      wtState,
+      readTracker,
+      {},
+      { action: "remove", deleteBranch: true },
+    );
+    runGitSync(repoDir, ["worktree", "prune"]);
+    runGitSync(repoDir, ["branch", "-d", "--", "feat/aaa"]);
 
     // Reject symlinked .justnewmcp/worktrees directory
     const symRepo = join(baseDir, "sym-repo");
