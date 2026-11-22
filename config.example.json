@@ -15,6 +15,9 @@
   ],
   "allowEnvReading": false,
   "askHumanAllowance": false,
+  "allowShell": false,
+  "deferredTools": false,
+  "lspServers": [],
   "allowedCommands": [
     {
       "command": "git",
