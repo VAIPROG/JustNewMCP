@@ -134,11 +134,15 @@ export function createAppServer(
 
   const stopListening = server.stop.bind(server);
   const shutdown = async (closeActiveConnections?: boolean) => {
-    await Promise.all([
-      stopListening(closeActiveConnections),
-      mcp.stopAllBackgroundJobs(),
-      mcp.stopLanguageServers(),
-    ]);
+    try {
+      await Promise.all([
+        stopListening(closeActiveConnections),
+        mcp.stopAllBackgroundJobs(),
+        mcp.stopLanguageServers(),
+      ]);
+    } finally {
+      oauth.close();
+    }
   };
   server.stop = shutdown;
 
