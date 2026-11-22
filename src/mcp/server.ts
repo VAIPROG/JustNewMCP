@@ -616,7 +616,7 @@ export class McpRouter {
   async stopAllBackgroundJobs(): Promise<void> {
     await Promise.all([
       this.backgroundJobs.stopAllBackgroundJobs(),
-      stopAllActiveShellProcesses(),
+      stopAllActiveShellProcesses(this),
     ]);
   }
 
@@ -1076,6 +1076,7 @@ export class McpRouter {
         timeoutMs,
         maxOutputChars: this.config.shellMaxOutputChars ?? 30_000,
         allowShell: this.config.allowShell === true,
+        owner: this,
       });
     }
 

@@ -24,6 +24,7 @@ const NOFOLLOW =
     : 0;
 
 interface ActiveShellEntry {
+  owner?: object;
   proc: Bun.Subprocess<"ignore", "pipe", "pipe">;
   abortController: AbortController;
   completion: Promise<void>;
@@ -38,9 +39,12 @@ const killActiveShellsOnExit = () => {
 };
 
 export async function stopAllActiveShellProcesses(
+  owner?: object,
   graceMs = 500,
 ): Promise<void> {
-  const entries = [...activeShellProcs];
+  const entries = [...activeShellProcs].filter(
+    (entry) => owner === undefined || entry.owner === owner,
+  );
   if (entries.length === 0) return;
   for (const { proc } of entries) {
     signalProcessGroup(proc, "SIGTERM");
@@ -76,6 +80,7 @@ export interface RunShellInput {
   timeoutMs?: number;
   maxOutputChars?: number;
   allowShell: boolean;
+  owner?: object;
 }
 
 export interface RunShellResult {
@@ -268,6 +273,7 @@ export async function runShellTool(
   const abortController = new AbortController();
   const completionDeferred = Promise.withResolvers<void>();
   const activeEntry: ActiveShellEntry = {
+    owner: input.owner,
     proc,
     abortController,
     completion: completionDeferred.promise,
