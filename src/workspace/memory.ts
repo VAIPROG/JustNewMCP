@@ -8,8 +8,13 @@ export const MEMORY_MAX_BYTES = 25 * 1024;
 export function normalizeWorkspaceSlug(workspacePath: string): string {
   const trimmed = workspacePath.trim().replace(/[/\\]+$/, "");
   const isWindowsPath = /^[A-Za-z]:[/\\]/.test(trimmed);
-  const hashInput = isWindowsPath ? trimmed.replaceAll("\\", "/").toLowerCase() : trimmed;
-  const shortHash = new Bun.CryptoHasher("sha256").update(hashInput, "utf8").digest("hex").slice(0, 8);
+  const hashInput = isWindowsPath
+    ? trimmed.replaceAll("\\", "/").toLowerCase()
+    : trimmed;
+  const shortHash = new Bun.CryptoHasher("sha256")
+    .update(hashInput, "utf8")
+    .digest("hex")
+    .slice(0, 8);
 
   const readable = (isWindowsPath ? trimmed.toLowerCase() : trimmed)
     .replace(/^[/\\]+/, "")
@@ -38,7 +43,10 @@ export function resolveMemoryDirectory(
   };
 }
 
-export function listMemoryTopics(memoryDir: string, boundaryRoot: string): string[] {
+export function listMemoryTopics(
+  memoryDir: string,
+  boundaryRoot: string,
+): string[] {
   if (!existsSync(memoryDir)) return [];
   let realMemDir: string;
   try {
@@ -60,7 +68,10 @@ export async function readMemoryPreview(
   workspaceDir: string,
   options: { memoryRoot?: string; deniedPatterns?: string[] } = {},
 ): Promise<{ memoryDir: string; preview: string | null; topics: string[] }> {
-  const { memoryDir, boundaryRoot } = resolveMemoryDirectory(workspaceDir, options.memoryRoot);
+  const { memoryDir, boundaryRoot } = resolveMemoryDirectory(
+    workspaceDir,
+    options.memoryRoot,
+  );
   const memoryPath = join(memoryDir, "MEMORY.md");
   const topics = listMemoryTopics(memoryDir, boundaryRoot);
 
@@ -86,7 +97,12 @@ export async function readMemoryPreview(
   }
 
   // Bounded disk read: never load more than MEMORY_MAX_BYTES into memory
-  const boundedText = await Bun.file(resolvedMemoryPath).slice(0, MEMORY_MAX_BYTES).text();
-  const preview = boundedText.split(/\r?\n/).slice(0, MEMORY_MAX_LINES).join("\n");
+  const boundedText = await Bun.file(resolvedMemoryPath)
+    .slice(0, MEMORY_MAX_BYTES)
+    .text();
+  const preview = boundedText
+    .split(/\r?\n/)
+    .slice(0, MEMORY_MAX_LINES)
+    .join("\n");
   return { memoryDir, preview, topics };
 }

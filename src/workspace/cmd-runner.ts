@@ -1,4 +1,11 @@
-import { chmodSync, existsSync, lstatSync, mkdirSync, realpathSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  realpathSync,
+  writeFileSync,
+} from "node:fs";
 import { join, relative, resolve } from "node:path";
 import type { AllowedCommandRule } from "../config.ts";
 import { generateRandomToken } from "../security/crypto.ts";
@@ -62,7 +69,11 @@ function matchCommandRule(
   args: string[],
   rules: AllowedCommandRule[],
 ): AllowedCommandRule {
-  if (command.includes("/") || command.includes("\\") || command.includes("\0")) {
+  if (
+    command.includes("/") ||
+    command.includes("\\") ||
+    command.includes("\0")
+  ) {
     throw new Error(`Command "${command}" must be a bare executable name.`);
   }
 
@@ -93,7 +104,9 @@ function matchCommandRule(
 
     if (rule.allowedArgs && rule.allowedArgs.length > 0) {
       const argGlobs = rule.allowedArgs.map((p) => new Bun.Glob(p));
-      const allAllowed = args.every((arg) => argGlobs.some((g) => g.match(arg)));
+      const allAllowed = args.every((arg) =>
+        argGlobs.some((g) => g.match(arg)),
+      );
       if (!allAllowed) {
         continue;
       }
@@ -102,7 +115,9 @@ function matchCommandRule(
     return rule;
   }
 
-  throw new Error(`Arguments for command "${command}" are not permitted by allowedCommands rules.`);
+  throw new Error(
+    `Arguments for command "${command}" are not permitted by allowedCommands rules.`,
+  );
 }
 
 function buildSanitizedEnv(): Record<string, string> {
@@ -220,9 +235,13 @@ export async function runAllowedCmdTool(
   const exitPromise = Promise.race([
     proc.exited,
     new Promise<null>((resolveExit) => {
-      abortController.signal.addEventListener("abort", () => {
-        setTimeout(() => resolveExit(null), 150);
-      }, { once: true });
+      abortController.signal.addEventListener(
+        "abort",
+        () => {
+          setTimeout(() => resolveExit(null), 150);
+        },
+        { once: true },
+      );
     }),
   ]);
 
@@ -236,7 +255,11 @@ export async function runAllowedCmdTool(
   });
 
   const totalChars = stdoutRes.text.length + stderrRes.text.length;
-  if (totalChars <= rule.maxOutputChars && !stdoutRes.hitHardCap && !stderrRes.hitHardCap) {
+  if (
+    totalChars <= rule.maxOutputChars &&
+    !stdoutRes.hitHardCap &&
+    !stderrRes.hitHardCap
+  ) {
     return {
       command: rule.command,
       args,

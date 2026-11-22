@@ -5,7 +5,10 @@ export const BASE_SECURITY_HEADERS: Record<string, string> = {
   "Cache-Control": "no-store",
 };
 
-export function withSecurityHeaders(res: Response, extra?: Record<string, string>): Response {
+export function withSecurityHeaders(
+  res: Response,
+  extra?: Record<string, string>,
+): Response {
   const headers = new Headers(res.headers);
   for (const [key, value] of Object.entries(BASE_SECURITY_HEADERS)) {
     if (!headers.has(key)) {
@@ -34,7 +37,10 @@ export async function readBodyWithinLimit(
     if (Number.isFinite(parsed) && parsed > maxBytes) {
       return {
         ok: false,
-        response: Response.json({ error: "payload_too_large" }, { status: 413 }),
+        response: Response.json(
+          { error: "payload_too_large" },
+          { status: 413 },
+        ),
       };
     }
   }
@@ -58,7 +64,10 @@ export async function readBodyWithinLimit(
         await reader.cancel();
         return {
           ok: false,
-          response: Response.json({ error: "payload_too_large" }, { status: 413 }),
+          response: Response.json(
+            { error: "payload_too_large" },
+            { status: 413 },
+          ),
         };
       }
       chunks.push(value);

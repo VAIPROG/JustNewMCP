@@ -1,7 +1,9 @@
 import { randomBytes, timingSafeEqual } from "node:crypto";
 
 export function sha256Buffer(input: string): Buffer {
-  return Buffer.from(new Bun.CryptoHasher("sha256").update(input, "utf8").digest());
+  return Buffer.from(
+    new Bun.CryptoHasher("sha256").update(input, "utf8").digest(),
+  );
 }
 
 export function sha256Hex(input: string): string {
@@ -24,10 +26,15 @@ export function generateApprovalCode(): string {
 }
 
 export function computePkceS256(verifier: string): string {
-  return new Bun.CryptoHasher("sha256").update(verifier, "ascii").digest("base64url");
+  return new Bun.CryptoHasher("sha256")
+    .update(verifier, "ascii")
+    .digest("base64url");
 }
 
-export function verifyPkceS256(verifier: string, expectedChallenge: string): boolean {
+export function verifyPkceS256(
+  verifier: string,
+  expectedChallenge: string,
+): boolean {
   if (verifier.length < 43 || verifier.length > 128) {
     return false;
   }

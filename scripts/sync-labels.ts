@@ -51,7 +51,9 @@ for (const label of labels) {
 
   if (patchRes.status !== 404) {
     const body = await patchRes.text();
-    throw new Error(`Failed to update label "${label.name}": ${patchRes.status} ${body}`);
+    throw new Error(
+      `Failed to update label "${label.name}": ${patchRes.status} ${body}`,
+    );
   }
 
   const postRes = await fetch(`https://api.github.com/repos/${repo}/labels`, {
@@ -62,10 +64,14 @@ for (const label of labels) {
 
   if (!postRes.ok) {
     const body = await postRes.text();
-    throw new Error(`Failed to create label "${label.name}": ${postRes.status} ${body}`);
+    throw new Error(
+      `Failed to create label "${label.name}": ${postRes.status} ${body}`,
+    );
   }
 
   created += 1;
 }
 
-console.log(`Synced ${labels.length} labels to ${repo} (${created} created, ${updated} updated).`);
+console.log(
+  `Synced ${labels.length} labels to ${repo} (${created} created, ${updated} updated).`,
+);

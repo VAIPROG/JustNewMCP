@@ -1,30 +1,58 @@
-import { chmodSync, existsSync, mkdirSync, statSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import { createCheckpoint } from "./checkpoints.ts";
 import { loadGitignoreMatcher } from "./gitignore.ts";
-import { INTERNAL_PROTECTED_PATTERNS, isEnvSecretPath, isPathDenied, resolveInsideRoots, resolveWritablePathInsideRoot } from "./paths.ts";
+import {
+  INTERNAL_PROTECTED_PATTERNS,
+  isEnvSecretPath,
+  isPathDenied,
+  resolveInsideRoots,
+  resolveWritablePathInsideRoot,
+} from "./paths.ts";
 
 const MAX_READ_FILE_BYTES = 2 * 1024 * 1024;
 const MAX_GREP_OUTPUT_CHARS = 30_000;
-const ALWAYS_IGNORED_PREFIXES = [".git/", "node_modules/", ".justnewmcp/checkpoints/"];
+const ALWAYS_IGNORED_PREFIXES = [
+  ".git/",
+  "node_modules/",
+  ".justnewmcp/checkpoints/",
+];
 
 const utf8FatalDecoder = new TextDecoder("utf-8", { fatal: true });
 
-function isBinaryOrInvalidUtf8(bytes: Uint8Array): { valid: true; text: string } | { valid: false; reason: string } {
+function isBinaryOrInvalidUtf8(
+  bytes: Uint8Array,
+): { valid: true; text: string } | { valid: false; reason: string } {
   const sampleLen = Math.min(bytes.byteLength, 8192);
   for (let i = 0; i < sampleLen; i += 1) {
     if (bytes[i] === 0) {
-      return { valid: false, reason: "File appears to be binary (contains NUL bytes)." };
+      return {
+        valid: false,
+        reason: "File appears to be binary (contains NUL bytes).",
+      };
     }
   }
   try {
     return { valid: true, text: utf8FatalDecoder.decode(bytes) };
   } catch {
-    return { valid: false, reason: "File is not valid UTF-8; refusing to avoid corrupting its encoding." };
+    return {
+      valid: false,
+      reason:
+        "File is not valid UTF-8; refusing to avoid corrupting its encoding.",
+    };
   }
 }
 
-function isIgnoredRelativePath(relPosix: string, deniedPatterns: string[]): boolean {
+function isIgnoredRelativePath(
+  relPosix: string,
+  deniedPatterns: string[],
+): boolean {
   for (const prefix of ALWAYS_IGNORED_PREFIXES) {
     if (relPosix.startsWith(prefix) || relPosix === prefix.slice(0, -1)) {
       return true;
@@ -40,7 +68,12 @@ function resolveReadablePathInWorkspace(
 ): string {
   const candidate = resolve(workspaceRoot, inputPath);
   const combinedDenied = [...deniedPatterns, ...INTERNAL_PROTECTED_PATTERNS];
-  const { resolvedPath } = resolveInsideRoots(candidate, [workspaceRoot], process.platform, combinedDenied);
+  const { resolvedPath } = resolveInsideRoots(
+    candidate,
+    [workspaceRoot],
+    process.platform,
+    combinedDenied,
+  );
   if (!statSync(resolvedPath).isFile()) {
     throw new Error(`Path "${inputPath}" is not a regular file.`);
   }
@@ -87,7 +120,12 @@ export async function readFileTool(
   let envSecret = isEnvSecretPath(candidateAbs);
   if (!envSecret) {
     try {
-      const { resolvedPath: probe } = resolveInsideRoots(candidateAbs, [workspaceRoot], process.platform, []);
+      const { resolvedPath: probe } = resolveInsideRoots(
+        candidateAbs,
+        [workspaceRoot],
+        process.platform,
+        [],
+      );
       envSecret = isEnvSecretPath(probe);
     } catch {
       // Let resolveReadablePathInWorkspace raise the standard boundary error
@@ -109,10 +147,16 @@ export async function readFileTool(
     }
   }
 
-  const resolvedPath = resolveReadablePathInWorkspace(opts.path, workspaceRoot, effectiveDenied);
+  const resolvedPath = resolveReadablePathInWorkspace(
+    opts.path,
+    workspaceRoot,
+    effectiveDenied,
+  );
   const stat = statSync(resolvedPath);
   if (stat.size > MAX_READ_FILE_BYTES) {
-    throw new Error(`File "${opts.path}" is ${stat.size} bytes (max ${MAX_READ_FILE_BYTES} bytes).`);
+    throw new Error(
+      `File "${opts.path}" is ${stat.size} bytes (max ${MAX_READ_FILE_BYTES} bytes).`,
+    );
   }
 
   const bytes = await Bun.file(resolvedPath).bytes();
@@ -121,11 +165,16 @@ export async function readFileTool(
     throw new Error(decoded.reason);
   }
 
-  const allLines = decoded.text === "" ? [] : decoded.text.replace(/\r?\n$/, "").split(/\r?\n/);
+  const allLines =
+    decoded.text === ""
+      ? []
+      : decoded.text.replace(/\r?\n$/, "").split(/\r?\n/);
   const startLine = Math.max(1, opts.offset ?? 1);
   const limit = Math.max(1, Math.min(opts.limit ?? 200, 2000));
   const slice = allLines.slice(startLine - 1, startLine - 1 + limit);
-  const numbered = slice.map((line, i) => `${String(startLine + i).padStart(4, " ")} | ${line}`).join("\n");
+  const numbered = slice
+    .map((line, i) => `${String(startLine + i).padStart(4, " ")} | ${line}`)
+    .join("\n");
 
   readTracker.add(resolvedPath);
 
@@ -162,7 +211,11 @@ export async function applyEditsTool(
     throw new Error("At least one edit operation is required.");
   }
 
-  const resolvedPath = resolveWritablePathInsideRoot(inputPath, workspaceRoot, deniedPatterns);
+  const resolvedPath = resolveWritablePathInsideRoot(
+    inputPath,
+    workspaceRoot,
+    deniedPatterns,
+  );
   if (!existsSync(resolvedPath) || !statSync(resolvedPath).isFile()) {
     throw new Error(`Path "${inputPath}" is not a regular file.`);
   }
@@ -172,7 +225,9 @@ export async function applyEditsTool(
 
   const stat = statSync(resolvedPath);
   if (stat.size > MAX_READ_FILE_BYTES) {
-    throw new Error(`File "${inputPath}" exceeds maximum editable size (${MAX_READ_FILE_BYTES} bytes).`);
+    throw new Error(
+      `File "${inputPath}" exceeds maximum editable size (${MAX_READ_FILE_BYTES} bytes).`,
+    );
   }
 
   const bytes = await Bun.file(resolvedPath).bytes();
@@ -192,12 +247,16 @@ export async function applyEditsTool(
       throw new Error(`Edit #${i + 1}: old_string must not be empty.`);
     }
     if (op.old_string === op.new_string) {
-      throw new Error(`Edit #${i + 1}: new_string must differ from old_string.`);
+      throw new Error(
+        `Edit #${i + 1}: new_string must differ from old_string.`,
+      );
     }
     const parts = updated.split(op.old_string);
     const matches = parts.length - 1;
     if (matches === 0) {
-      throw new Error(`Edit #${i + 1}: old_string not found in "${inputPath}".`);
+      throw new Error(
+        `Edit #${i + 1}: old_string not found in "${inputPath}".`,
+      );
     }
     if (matches > 1 && !op.replace_all) {
       throw new Error(
@@ -209,7 +268,11 @@ export async function applyEditsTool(
     totalReplacements += op.replace_all ? matches : 1;
   }
 
-  const cp = await createCheckpoint(workspaceRoot, resolvedPath, edits.length > 1 ? "multi_edit" : "edit_file");
+  const cp = await createCheckpoint(
+    workspaceRoot,
+    resolvedPath,
+    edits.length > 1 ? "multi_edit" : "edit_file",
+  );
   await Bun.write(resolvedPath, updated);
 
   return {
@@ -231,14 +294,24 @@ export async function writeFileTool(
   bytesWritten: number;
 }> {
   // Allow writing to .env files (with pre-write checkpoint), while keeping non-env secrets blocked
-  const effectiveWriteDenied = isEnvSecretPath(inputPath) ? stripEnvPatterns(deniedPatterns) : deniedPatterns;
-  const targetPath = resolveWritablePathInsideRoot(inputPath, workspaceRoot, effectiveWriteDenied);
+  const effectiveWriteDenied = isEnvSecretPath(inputPath)
+    ? stripEnvPatterns(deniedPatterns)
+    : deniedPatterns;
+  const targetPath = resolveWritablePathInsideRoot(
+    inputPath,
+    workspaceRoot,
+    effectiveWriteDenied,
+  );
   mkdirSync(dirname(targetPath), { recursive: true });
 
   const existedBefore = existsSync(targetPath);
   const cp = await createCheckpoint(workspaceRoot, targetPath, "write_file");
   let bytesWritten: number;
-  if (!existedBefore && isEnvSecretPath(targetPath) && process.platform !== "win32") {
+  if (
+    !existedBefore &&
+    isEnvSecretPath(targetPath) &&
+    process.platform !== "win32"
+  ) {
     writeFileSync(targetPath, content, { encoding: "utf8", mode: 0o600 });
     chmodSync(targetPath, 0o600);
     bytesWritten = Buffer.byteLength(content, "utf8");
@@ -265,14 +338,31 @@ export async function globFilesTool(
   const glob = new Bun.Glob(pattern);
   const candidates: Array<{ rel: string; mtimeMs: number }> = [];
 
-  for await (const rawRel of glob.scan({ cwd: workspaceRoot, onlyFiles: true, dot: true, followSymlinks: false })) {
+  for await (const rawRel of glob.scan({
+    cwd: workspaceRoot,
+    onlyFiles: true,
+    dot: true,
+    followSymlinks: false,
+  })) {
     const relPosix = rawRel.replaceAll("\\", "/");
-    if (isIgnoredRelativePath(relPosix, deniedPatterns) || isGitignored(relPosix)) continue;
+    if (
+      isIgnoredRelativePath(relPosix, deniedPatterns) ||
+      isGitignored(relPosix)
+    )
+      continue;
 
     try {
       const fullPath = join(workspaceRoot, rawRel);
-      const combinedDenied = [...deniedPatterns, ...INTERNAL_PROTECTED_PATTERNS];
-      const { resolvedPath } = resolveInsideRoots(fullPath, [workspaceRoot], process.platform, combinedDenied);
+      const combinedDenied = [
+        ...deniedPatterns,
+        ...INTERNAL_PROTECTED_PATTERNS,
+      ];
+      const { resolvedPath } = resolveInsideRoots(
+        fullPath,
+        [workspaceRoot],
+        process.platform,
+        combinedDenied,
+      );
       const stat = statSync(resolvedPath);
       if (!stat.isFile()) continue;
       candidates.push({ rel: relPosix, mtimeMs: stat.mtimeMs });
@@ -281,7 +371,9 @@ export async function globFilesTool(
     }
   }
 
-  candidates.sort((a, b) => b.mtimeMs - a.mtimeMs || a.rel.localeCompare(b.rel));
+  candidates.sort(
+    (a, b) => b.mtimeMs - a.mtimeMs || a.rel.localeCompare(b.rel),
+  );
   const truncated = candidates.length > capped;
   return {
     files: candidates.slice(0, capped).map((c) => c.rel),
@@ -318,15 +410,32 @@ export async function grepFilesTool(
   let charCount = 0;
   let truncated = false;
 
-  for await (const rawRel of glob.scan({ cwd: workspaceRoot, onlyFiles: true, dot: true, followSymlinks: false })) {
+  for await (const rawRel of glob.scan({
+    cwd: workspaceRoot,
+    onlyFiles: true,
+    dot: true,
+    followSymlinks: false,
+  })) {
     const relPosix = rawRel.replaceAll("\\", "/");
-    if (isIgnoredRelativePath(relPosix, deniedPatterns) || isGitignored(relPosix)) continue;
+    if (
+      isIgnoredRelativePath(relPosix, deniedPatterns) ||
+      isGitignored(relPosix)
+    )
+      continue;
 
     let resolvedPath: string;
     try {
       const fullPath = join(workspaceRoot, rawRel);
-      const combinedDenied = [...deniedPatterns, ...INTERNAL_PROTECTED_PATTERNS];
-      const res = resolveInsideRoots(fullPath, [workspaceRoot], process.platform, combinedDenied);
+      const combinedDenied = [
+        ...deniedPatterns,
+        ...INTERNAL_PROTECTED_PATTERNS,
+      ];
+      const res = resolveInsideRoots(
+        fullPath,
+        [workspaceRoot],
+        process.platform,
+        combinedDenied,
+      );
       resolvedPath = res.resolvedPath;
       const stat = statSync(resolvedPath);
       if (!stat.isFile() || stat.size > MAX_READ_FILE_BYTES) continue;
@@ -365,7 +474,10 @@ export async function grepFilesTool(
           block.push(`${relPosix}:${ln + 1}${sep}${lines[ln] ?? ""}`);
         }
         const entry = block.join("\n");
-        if (charCount + entry.length > MAX_GREP_OUTPUT_CHARS || results.length >= maxMatches) {
+        if (
+          charCount + entry.length > MAX_GREP_OUTPUT_CHARS ||
+          results.length >= maxMatches
+        ) {
           truncated = true;
           break;
         }
@@ -374,7 +486,11 @@ export async function grepFilesTool(
       }
     }
 
-    if (truncated || results.length >= maxMatches || charCount >= MAX_GREP_OUTPUT_CHARS) {
+    if (
+      truncated ||
+      results.length >= maxMatches ||
+      charCount >= MAX_GREP_OUTPUT_CHARS
+    ) {
       truncated = true;
       break;
     }

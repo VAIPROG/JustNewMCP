@@ -1,7 +1,18 @@
-import { chmodSync, existsSync, mkdirSync, statSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { dirname, relative, resolve } from "node:path";
 import { createCheckpoint } from "./checkpoints.ts";
-import { isEnvSecretPath, isSafeEnvTemplatePath, resolveInsideRoots, resolveWritablePathInsideRoot } from "./paths.ts";
+import {
+  isEnvSecretPath,
+  isSafeEnvTemplatePath,
+  resolveInsideRoots,
+  resolveWritablePathInsideRoot,
+} from "./paths.ts";
 
 const ENV_KEY_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const MAX_ENV_FILE_BYTES = 256 * 1024;
@@ -50,7 +61,12 @@ export function parseEnvEntries(text: string): ParsedEnvEntry[] {
     }
 
     // Blank line or comment line
-    if (pos >= len || text[pos] === "\n" || text[pos] === "\r" || text[pos] === "#") {
+    if (
+      pos >= len ||
+      text[pos] === "\n" ||
+      text[pos] === "\r" ||
+      text[pos] === "#"
+    ) {
       while (pos < len && text[pos] !== "\n") {
         pos += 1;
       }
@@ -73,7 +89,12 @@ export function parseEnvEntries(text: string): ParsedEnvEntry[] {
     }
 
     const keyStart = pos;
-    while (pos < len && text[pos] !== "=" && text[pos] !== "\n" && text[pos] !== "\r") {
+    while (
+      pos < len &&
+      text[pos] !== "=" &&
+      text[pos] !== "\n" &&
+      text[pos] !== "\r"
+    ) {
       pos += 1;
     }
 
@@ -175,16 +196,20 @@ function formatEnvValue(value: string): string {
   const withEscapedDollar = value.replaceAll("$", "\\$");
   const needsQuoting = /[\r\n\s#"'`$]/.test(value);
   if (needsQuoting && withEscapedDollar.endsWith("\\")) {
-    throw new Error("Quoted dotenv values ending with a backslash cannot be safely serialized.");
+    throw new Error(
+      "Quoted dotenv values ending with a backslash cannot be safely serialized.",
+    );
   }
   if (/[\r\n]/.test(withEscapedDollar)) {
-    if (!withEscapedDollar.includes("\"")) {
+    if (!withEscapedDollar.includes('"')) {
       return `"${withEscapedDollar.replaceAll("\r", "\\r").replaceAll("\n", "\\n")}"`;
     }
     if (!withEscapedDollar.includes("`")) {
       return `\`${withEscapedDollar}\``;
     }
-    throw new Error("Value containing both newlines, double quotes, and backticks cannot be safely serialized in dotenv.");
+    throw new Error(
+      "Value containing both newlines, double quotes, and backticks cannot be safely serialized in dotenv.",
+    );
   }
   if (!/[\s#"'`$]/.test(value)) {
     return withEscapedDollar;
@@ -198,7 +223,9 @@ function formatEnvValue(value: string): string {
   if (!withEscapedDollar.includes('"') && !/\\[rn]/.test(withEscapedDollar)) {
     return `"${withEscapedDollar}"`;
   }
-  throw new Error("Value containing single quotes, double quotes, and backticks simultaneously cannot be safely serialized in dotenv.");
+  throw new Error(
+    "Value containing single quotes, double quotes, and backticks simultaneously cannot be safely serialized in dotenv.",
+  );
 }
 
 export async function readAvailableEnvsTool(
@@ -213,14 +240,21 @@ export async function readAvailableEnvsTool(
   assertEnvFileTarget(inputPath);
   const nonEnvDenied = stripEnvPatterns(deniedPatterns);
   const candidate = resolve(workspaceRoot, inputPath);
-  const { resolvedPath } = resolveInsideRoots(candidate, [workspaceRoot], process.platform, nonEnvDenied);
+  const { resolvedPath } = resolveInsideRoots(
+    candidate,
+    [workspaceRoot],
+    process.platform,
+    nonEnvDenied,
+  );
 
   const stat = statSync(resolvedPath);
   if (!stat.isFile()) {
     throw new Error(`Path "${inputPath}" is not a regular file.`);
   }
   if (stat.size > MAX_ENV_FILE_BYTES) {
-    throw new Error(`Env file "${inputPath}" exceeds ${MAX_ENV_FILE_BYTES} bytes.`);
+    throw new Error(
+      `Env file "${inputPath}" exceeds ${MAX_ENV_FILE_BYTES} bytes.`,
+    );
   }
 
   const text = await Bun.file(resolvedPath).text();
@@ -268,10 +302,16 @@ export async function setEnvVarTool(
   }
 
   const nonEnvDenied = stripEnvPatterns(deniedPatterns);
-  const targetPath = resolveWritablePathInsideRoot(inputPath, workspaceRoot, nonEnvDenied);
+  const targetPath = resolveWritablePathInsideRoot(
+    inputPath,
+    workspaceRoot,
+    nonEnvDenied,
+  );
   mkdirSync(dirname(targetPath), { recursive: true });
 
-  const existing = existsSync(targetPath) ? await Bun.file(targetPath).text() : "";
+  const existing = existsSync(targetPath)
+    ? await Bun.file(targetPath).text()
+    : "";
   const entries = parseEnvEntries(existing);
   const matches = entries.filter((e) => e.key === opts.key);
   const actionMode = opts.action ?? "set";
@@ -281,12 +321,15 @@ export async function setEnvVarTool(
 
   if (actionMode === "delete") {
     if (matches.length === 0) {
-      throw new Error(`Environment variable "${opts.key}" not found in "${inputPath}".`);
+      throw new Error(
+        `Environment variable "${opts.key}" not found in "${inputPath}".`,
+      );
     }
     for (let i = matches.length - 1; i >= 0; i -= 1) {
       const m = matches[i];
       if (!m) continue;
-      updatedText = updatedText.slice(0, m.startOffset) + updatedText.slice(m.endOffset);
+      updatedText =
+        updatedText.slice(0, m.startOffset) + updatedText.slice(m.endOffset);
     }
     resultAction = "deleted";
   } else {
@@ -299,19 +342,31 @@ export async function setEnvVarTool(
         const m = matches[i];
         if (!m) continue;
         const replacement = i === lastIndex ? formattedLine : "";
-        updatedText = updatedText.slice(0, m.startOffset) + replacement + updatedText.slice(m.endOffset);
+        updatedText =
+          updatedText.slice(0, m.startOffset) +
+          replacement +
+          updatedText.slice(m.endOffset);
       }
       resultAction = "updated";
     } else {
-      const needsNewline = updatedText.length > 0 && !updatedText.endsWith("\n");
+      const needsNewline =
+        updatedText.length > 0 && !updatedText.endsWith("\n");
       updatedText = `${updatedText}${needsNewline ? "\n" : ""}${formattedLine}`;
       resultAction = "created";
     }
   }
 
   const existedBefore = existsSync(targetPath);
-  const cp = await createCheckpoint(workspaceRoot, targetPath, `set_env_var:${opts.key}`);
-  if (!existedBefore && isEnvSecretPath(targetPath) && process.platform !== "win32") {
+  const cp = await createCheckpoint(
+    workspaceRoot,
+    targetPath,
+    `set_env_var:${opts.key}`,
+  );
+  if (
+    !existedBefore &&
+    isEnvSecretPath(targetPath) &&
+    process.platform !== "win32"
+  ) {
     writeFileSync(targetPath, updatedText, { encoding: "utf8", mode: 0o600 });
     chmodSync(targetPath, 0o600);
   } else {
