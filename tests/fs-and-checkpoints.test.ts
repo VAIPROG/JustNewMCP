@@ -828,6 +828,7 @@ describe("filesystem tools and local checkpoints", () => {
         accessTokenTtlSec: 3600,
         refreshTokenTtlSec: 604800,
         authCodeTtlSec: 300,
+        inMemoryTokens: true,
         rateLimit: {
           maxFailures: 5,
           windowMs: 60_000,

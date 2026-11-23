@@ -8,8 +8,13 @@ import {
   verifyPkceS256,
 } from "../security/crypto.ts";
 import { readBodyWithinLimit } from "../security/headers.ts";
-import { renderAuthorizePage } from "../ui/pages.ts";
 import { IpRateLimiter } from "../security/rate-limiter.ts";
+import { renderAuthorizePage } from "../ui/pages.ts";
+import {
+  computeServerIdentity,
+  defaultTokenStorePath,
+  HashedTokenStore,
+} from "./token-store.ts";
 
 interface AuthCodeRecord {
   clientId: string;
@@ -133,6 +138,8 @@ export class OAuthServer {
   private readonly authCodes = new Map<string, AuthCodeRecord>();
   private readonly accessTokens = new Map<string, TokenRecord>();
   private readonly refreshTokens = new Map<string, TokenRecord>();
+  private readonly tokenStore?: HashedTokenStore;
+  private tokenStoreDirty = false;
   private approvalCode: string;
 
   constructor(
@@ -144,6 +151,49 @@ export class OAuthServer {
     this.onApprovalCodeRotated = options.onApprovalCodeRotated;
     this.csrfSecret = generateRandomToken(32);
     this.approvalCode = options.initialApprovalCode ?? generateApprovalCode();
+
+    if (!config.oauth.inMemoryTokens) {
+      const serverIdentity = computeServerIdentity(
+        config.publicUrl,
+        config.oauth.clientId,
+        config.oauth.clientSecret,
+      );
+      const storePath =
+        config.oauth.tokenStorePath ?? defaultTokenStorePath(serverIdentity);
+      this.tokenStore = new HashedTokenStore(
+        storePath,
+        config.allowedRoots,
+        serverIdentity,
+      );
+      let loaded: ReturnType<HashedTokenStore["load"]>;
+      try {
+        loaded = this.tokenStore.load();
+      } catch (err) {
+        this.tokenStore.close();
+        throw err;
+      }
+      for (const [hash, record] of loaded.accessTokens) {
+        this.accessTokens.set(hash, record);
+      }
+      for (const [hash, record] of loaded.refreshTokens) {
+        this.refreshTokens.set(hash, record);
+      }
+    }
+  }
+
+  close(): void {
+    this.tokenStore?.close();
+  }
+
+  private persistTokens(now = Date.now()): void {
+    if (!this.tokenStore) return;
+    try {
+      this.tokenStore.save(this.accessTokens, this.refreshTokens, now);
+      this.tokenStoreDirty = false;
+    } catch (err) {
+      this.tokenStoreDirty = true;
+      throw err;
+    }
   }
 
   private resolveIp(req: Request, peerIp?: string): string {
@@ -158,11 +208,25 @@ export class OAuthServer {
     for (const [k, v] of this.authCodes) {
       if (v.expiresAt <= now) this.authCodes.delete(k);
     }
+    let tokensChanged = false;
     for (const [k, v] of this.accessTokens) {
-      if (v.expiresAt <= now) this.accessTokens.delete(k);
+      if (v.expiresAt <= now) {
+        this.accessTokens.delete(k);
+        tokensChanged = true;
+      }
     }
     for (const [k, v] of this.refreshTokens) {
-      if (v.expiresAt <= now) this.refreshTokens.delete(k);
+      if (v.expiresAt <= now) {
+        this.refreshTokens.delete(k);
+        tokensChanged = true;
+      }
+    }
+    if (tokensChanged || this.tokenStoreDirty) {
+      try {
+        this.persistTokens(now);
+      } catch {
+        // Best-effort during read/auth paths; tokenStoreDirty remains true for retry.
+      }
     }
   }
 
@@ -194,6 +258,7 @@ export class OAuthServer {
       response_types_supported: ["code"],
       grant_types_supported: ["authorization_code", "refresh_token"],
       code_challenge_methods_supported: ["S256"],
+      authorization_response_iss_parameter_supported: true,
       token_endpoint_auth_methods_supported: [
         "client_secret_post",
         "client_secret_basic",
@@ -345,6 +410,7 @@ export class OAuthServer {
 
     const target = new URL(redirectUri);
     target.searchParams.set("code", code);
+    target.searchParams.set("iss", this.config.publicUrl);
     if (state) {
       target.searchParams.set("state", state);
     }
@@ -514,25 +580,31 @@ export class OAuthServer {
         );
       }
 
+      const res = this.issueTokenPair(record.clientId, record.scope, {
+        rollbackAuthCode: { hash: codeHash, record },
+      });
       this.rateLimiter.recordSuccess(ip);
       this.audit.record("oauth.token.issued", ip, {
         clientId: record.clientId,
         detail: "authorization_code",
       });
-      return this.issueTokenPair(record.clientId, record.scope);
+      return res;
     }
 
     if (grantType === "refresh_token") {
       const refresh = params.get("refresh_token") ?? "";
       const refreshHash = sha256Hex(refresh);
       const record = this.refreshTokens.get(refreshHash);
-      this.refreshTokens.delete(refreshHash);
+      const deleted = this.refreshTokens.delete(refreshHash);
 
       if (
         !record ||
         record.expiresAt < Date.now() ||
         record.clientId !== client.clientId
       ) {
+        if (deleted || this.tokenStoreDirty) {
+          this.persistTokens();
+        }
         this.rateLimiter.recordFailure(ip);
         this.audit.record("oauth.token.denied", ip, {
           clientId: client.clientId,
@@ -541,12 +613,15 @@ export class OAuthServer {
         return Response.json({ error: "invalid_grant" }, { status: 400 });
       }
 
+      const res = this.issueTokenPair(record.clientId, record.scope, {
+        rollbackRefresh: { hash: refreshHash, record },
+      });
       this.rateLimiter.recordSuccess(ip);
       this.audit.record("oauth.token.issued", ip, {
         clientId: record.clientId,
         detail: "refresh_token",
       });
-      return this.issueTokenPair(record.clientId, record.scope);
+      return res;
     }
 
     return Response.json({ error: "unsupported_grant_type" }, { status: 400 });
@@ -576,8 +651,11 @@ export class OAuthServer {
     const token = params.get("token") ?? "";
     if (token) {
       const hash = sha256Hex(token);
-      this.accessTokens.delete(hash);
-      this.refreshTokens.delete(hash);
+      const removedAccess = this.accessTokens.delete(hash);
+      const removedRefresh = this.refreshTokens.delete(hash);
+      if (removedAccess || removedRefresh || this.tokenStoreDirty) {
+        this.persistTokens();
+      }
       this.audit.record("oauth.token.revoked", ip, {
         clientId: client.clientId,
       });
@@ -586,21 +664,49 @@ export class OAuthServer {
     return new Response(null, { status: 200 });
   }
 
-  private issueTokenPair(clientId: string, scope: string): Response {
+  private issueTokenPair(
+    clientId: string,
+    scope: string,
+    opts?: {
+      rollbackAuthCode?: { hash: string; record: AuthCodeRecord };
+      rollbackRefresh?: { hash: string; record: TokenRecord };
+    },
+  ): Response {
     const now = Date.now();
     const accessToken = generateRandomToken(32);
     const refreshToken = generateRandomToken(32);
+    const accessHash = sha256Hex(accessToken);
+    const refreshHash = sha256Hex(refreshToken);
 
-    this.accessTokens.set(sha256Hex(accessToken), {
+    this.accessTokens.set(accessHash, {
       clientId,
       scope,
       expiresAt: now + this.config.oauth.accessTokenTtlSec * 1000,
     });
-    this.refreshTokens.set(sha256Hex(refreshToken), {
+    this.refreshTokens.set(refreshHash, {
       clientId,
       scope,
       expiresAt: now + this.config.oauth.refreshTokenTtlSec * 1000,
     });
+    try {
+      this.persistTokens(now);
+    } catch (err) {
+      this.accessTokens.delete(accessHash);
+      this.refreshTokens.delete(refreshHash);
+      if (opts?.rollbackAuthCode) {
+        this.authCodes.set(
+          opts.rollbackAuthCode.hash,
+          opts.rollbackAuthCode.record,
+        );
+      }
+      if (opts?.rollbackRefresh) {
+        this.refreshTokens.set(
+          opts.rollbackRefresh.hash,
+          opts.rollbackRefresh.record,
+        );
+      }
+      throw err;
+    }
 
     return Response.json(
       {

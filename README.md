@@ -1,6 +1,6 @@
 # JustNewMCP
 
-[Русская версия](./docs/ru/README.md) · [Architecture](./docs/architecture.md)
+[Русская версия](./docs/ru/README.md) · [Architecture](./docs/architecture.md) · [Setup Guides](./docs/guides.md)
 
 A remote MCP server that turns any chat model with MCP support into a local coding agent. Built on TypeScript and Bun 1.4+ for Linux and Windows, with OAuth 2.1 access control and a workspace loop modeled after Claude Code.
 
@@ -10,11 +10,11 @@ Chat clients already support MCP, yet most local servers stop at raw file reads 
 
 ## Status
 
-Phase 1 and Phase 2 are both complete on `main` with 69 tests passing across Linux and Windows CI and 0 open Code Scanning alerts.
+Release `v0.1.0` brings Phase 1 and Phase 2 together on `main` with 71 tests passing across Linux and Windows CI and 0 open Code Scanning alerts.
 
 ### Ready on `main`
 
-- **OAuth 2.1 gate.** Built-in authorization server at `/.well-known/oauth-protected-resource`, `/.well-known/oauth-authorization-server`, `/oauth/authorize`, `/oauth/token`, and `/oauth/revoke` with PKCE S256, stateless `Bun.CSRF` tokens, exact callback URI matching, per-instance `0600` approval-code files outside `allowedRoots`, SHA-256 hashed token storage, and trusted-proxy IP rate limiting.
+- **OAuth 2.1 gate.** Built-in authorization server at `/.well-known/oauth-protected-resource`, `/.well-known/oauth-authorization-server`, `/oauth/authorize`, `/oauth/token`, and `/oauth/revoke` with PKCE S256, RFC 9207 `iss` responses for Gemini and OpenAI ChatGPT, stateless `Bun.CSRF` tokens, exact callback URI matching, per-instance `0600` approval-code files outside `allowedRoots`, toggleable `inMemoryTokens` vs `0600` persisted SHA-256 token hashes, and trusted-proxy IP rate limiting.
 - **Workspace bootstrap and git worktrees.** `workspace_init` and `workspace_info` with cross-platform root anchoring, symlink escape checks, `core.fsmonitor=false` git status, and bounded 25 KiB `MEMORY.md` preview loading, plus `worktree_enter` and `worktree_exit` for isolated branches under `.justnewmcp/worktrees/` with repository hooks and external filter drivers disabled.
 - **Files, search, and checkpoints.** `read_file` with line numbers and UTF-8/binary guards, `edit_file` with read-before-edit enforcement, atomic `multi_edit`, `write_file`, `.gitignore`-aware `glob_files` and `grep_files`, plus `checkpoint_list` and `checkpoint_rewind` with `0700`/`0600` POSIX permissions.
 - **Safe `.env` workflow.** Safe templates like `.env.example` stay readable by default. Real `.env` files stay protected behind `read_available_envs` returning only names and value lengths, `set_env_var` with multiline-aware dotenv updates and checkpoints, `allowEnvReading`, and `askHumanAllowance`.

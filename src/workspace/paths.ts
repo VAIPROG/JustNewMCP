@@ -6,6 +6,7 @@ export const INTERNAL_PROTECTED_PATTERNS = [
   ".justnewmcp/checkpoints/*",
   ".justnewmcp/approval-code",
   ".justnewmcp/approval-code-*",
+  ".justnewmcp/oauth-tokens*",
 ];
 const SAFE_ENV_TEMPLATES = new Set([
   ".env.example",
@@ -254,4 +255,39 @@ export function resolveWritablePathInsideRoot(
   }
 
   return finalPath;
+}
+
+export function canonicalizeCandidatePath(filePath: string): string {
+  const abs = path.resolve(filePath);
+  if (existsSync(abs)) {
+    return realpathSync(abs);
+  }
+  const trailing: string[] = [];
+  let cursor = abs;
+  while (!existsSync(cursor)) {
+    const parent = path.dirname(cursor);
+    if (parent === cursor) break;
+    trailing.unshift(path.basename(cursor));
+    cursor = parent;
+  }
+  const realBase = existsSync(cursor) ? realpathSync(cursor) : cursor;
+  return path.join(realBase, ...trailing);
+}
+
+export function assertFileOutsideAllowedRoots(
+  filePath: string,
+  allowedRoots: string[],
+  label = "Internal file",
+  platform: NodeJS.Platform = process.platform,
+): string {
+  const canonicalTarget = canonicalizeCandidatePath(filePath);
+  for (const root of allowedRoots) {
+    const canonicalRoot = canonicalizeCandidatePath(root);
+    if (isPathInsideRoot(canonicalTarget, canonicalRoot, platform)) {
+      throw new Error(
+        `${label} "${filePath}" must reside outside configured allowedRoots.`,
+      );
+    }
+  }
+  return canonicalTarget;
 }

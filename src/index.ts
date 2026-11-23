@@ -1,15 +1,13 @@
 import {
   closeSync,
   constants as fsConstants,
-  existsSync,
   fchmodSync,
   mkdirSync,
   openSync,
-  realpathSync,
   writeFileSync,
 } from "node:fs";
 import { homedir } from "node:os";
-import { basename, dirname, join, resolve } from "node:path";
+import { dirname, join } from "node:path";
 import { loadConfig, type AppConfig } from "./config.ts";
 import { McpRouter } from "./mcp/server.ts";
 import { OAuthServer } from "./oauth/server.ts";
@@ -17,7 +15,7 @@ import { ensureBunVersion } from "./runtime/bun-version.ts";
 import { AuditLogger } from "./security/audit.ts";
 import { withSecurityHeaders } from "./security/headers.ts";
 import { renderLandingPage } from "./ui/pages.ts";
-import { isPathInsideRoot } from "./workspace/paths.ts";
+import { assertFileOutsideAllowedRoots } from "./workspace/paths.ts";
 
 export interface RunningServer {
   server: ReturnType<typeof Bun.serve>;
@@ -32,40 +30,17 @@ export interface CreateServerOptions {
   onApprovalCodeRotated?: (code: string) => void;
 }
 
-function canonicalizeCandidatePath(filePath: string): string {
-  const abs = resolve(filePath);
-  if (existsSync(abs)) {
-    return realpathSync(abs);
-  }
-  const trailing: string[] = [];
-  let cursor = abs;
-  while (!existsSync(cursor)) {
-    const parent = dirname(cursor);
-    if (parent === cursor) break;
-    trailing.unshift(basename(cursor));
-    cursor = parent;
-  }
-  const realBase = existsSync(cursor) ? realpathSync(cursor) : cursor;
-  return join(realBase, ...trailing);
-}
-
 export function assertApprovalCodeFileOutsideAllowedRoots(
   filePath: string,
   allowedRoots: string[],
   platform: NodeJS.Platform = process.platform,
 ): string {
-  const canonicalTarget = canonicalizeCandidatePath(filePath);
-  for (const root of allowedRoots) {
-    const canonicalRoot = existsSync(resolve(root))
-      ? realpathSync(resolve(root))
-      : resolve(root);
-    if (isPathInsideRoot(canonicalTarget, canonicalRoot, platform)) {
-      throw new Error(
-        `Approval code file "${filePath}" must reside outside configured allowedRoots.`,
-      );
-    }
-  }
-  return canonicalTarget;
+  return assertFileOutsideAllowedRoots(
+    filePath,
+    allowedRoots,
+    "Approval code file",
+    platform,
+  );
 }
 
 function writeApprovalCodeFile(filePath: string, code: string): void {
@@ -104,66 +79,83 @@ export function createAppServer(
     initialApprovalCode: options.initialApprovalCode,
     onApprovalCodeRotated: options.onApprovalCodeRotated,
   });
-  const mcp = new McpRouter(config, audit);
+  let mcp: McpRouter;
+  let server: ReturnType<typeof Bun.serve>;
+  try {
+    mcp = new McpRouter(config, audit);
 
-  const server = Bun.serve({
-    hostname: config.host,
-    port: config.port,
-    maxRequestBodySize: Math.max(config.maxMcpBodyBytes, 64 * 1024),
-    async fetch(req: Request, bunServer): Promise<Response> {
-      const url = new URL(req.url);
-      const peerIp = bunServer.requestIP(req)?.address ?? "127.0.0.1";
-      let res: Response;
+    server = Bun.serve({
+      hostname: config.host,
+      port: config.port,
+      maxRequestBodySize: Math.max(config.maxMcpBodyBytes, 64 * 1024),
+      async fetch(req: Request, bunServer): Promise<Response> {
+        const url = new URL(req.url);
+        const peerIp = bunServer.requestIP(req)?.address ?? "127.0.0.1";
+        let res: Response;
 
-      if (req.method === "GET" && url.pathname === "/") {
-        res = new Response(renderLandingPage(config.publicUrl), {
-          status: 200,
-          headers: {
-            "Content-Type": "text/html; charset=utf-8",
-            "Content-Security-Policy":
-              "default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'",
-          },
-        });
-      } else if (req.method === "GET" && url.pathname === "/health") {
-        res = Response.json({ status: "ok", bun: Bun.version });
-      } else if (
-        req.method === "GET" &&
-        url.pathname === "/.well-known/oauth-protected-resource"
-      ) {
-        res = oauth.handleProtectedResourceMetadata();
-      } else if (
-        req.method === "GET" &&
-        url.pathname === "/.well-known/oauth-authorization-server"
-      ) {
-        res = oauth.handleAuthorizationServerMetadata();
-      } else if (url.pathname === "/oauth/authorize" && req.method === "GET") {
-        res = await oauth.handleAuthorizeGet(req);
-      } else if (url.pathname === "/oauth/authorize" && req.method === "POST") {
-        res = await oauth.handleAuthorizePost(req, peerIp);
-      } else if (req.method === "POST" && url.pathname === "/oauth/token") {
-        res = await oauth.handleToken(req, peerIp);
-      } else if (req.method === "POST" && url.pathname === "/oauth/revoke") {
-        res = await oauth.handleRevoke(req, peerIp);
-      } else if (req.method === "POST" && url.pathname === "/mcp") {
-        const auth = oauth.authenticateBearer(req, peerIp);
-        res = auth.ok
-          ? await mcp.handleRequest(req, auth.clientId, auth.ip)
-          : auth.response;
-      } else {
-        res = new Response("Not Found", { status: 404 });
-      }
+        if (req.method === "GET" && url.pathname === "/") {
+          res = new Response(renderLandingPage(config.publicUrl), {
+            status: 200,
+            headers: {
+              "Content-Type": "text/html; charset=utf-8",
+              "Content-Security-Policy":
+                "default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'",
+            },
+          });
+        } else if (req.method === "GET" && url.pathname === "/health") {
+          res = Response.json({ status: "ok", bun: Bun.version });
+        } else if (
+          req.method === "GET" &&
+          url.pathname === "/.well-known/oauth-protected-resource"
+        ) {
+          res = oauth.handleProtectedResourceMetadata();
+        } else if (
+          req.method === "GET" &&
+          url.pathname === "/.well-known/oauth-authorization-server"
+        ) {
+          res = oauth.handleAuthorizationServerMetadata();
+        } else if (
+          url.pathname === "/oauth/authorize" &&
+          req.method === "GET"
+        ) {
+          res = await oauth.handleAuthorizeGet(req);
+        } else if (
+          url.pathname === "/oauth/authorize" &&
+          req.method === "POST"
+        ) {
+          res = await oauth.handleAuthorizePost(req, peerIp);
+        } else if (req.method === "POST" && url.pathname === "/oauth/token") {
+          res = await oauth.handleToken(req, peerIp);
+        } else if (req.method === "POST" && url.pathname === "/oauth/revoke") {
+          res = await oauth.handleRevoke(req, peerIp);
+        } else if (req.method === "POST" && url.pathname === "/mcp") {
+          const auth = oauth.authenticateBearer(req, peerIp);
+          res = auth.ok
+            ? await mcp.handleRequest(req, auth.clientId, auth.ip)
+            : auth.response;
+        } else {
+          res = new Response("Not Found", { status: 404 });
+        }
 
-      return withSecurityHeaders(res);
-    },
-  });
+        return withSecurityHeaders(res);
+      },
+    });
+  } catch (err) {
+    oauth.close();
+    throw err;
+  }
 
   const stopListening = server.stop.bind(server);
   const shutdown = async (closeActiveConnections?: boolean) => {
-    await Promise.all([
-      stopListening(closeActiveConnections),
-      mcp.stopAllBackgroundJobs(),
-      mcp.stopLanguageServers(),
-    ]);
+    try {
+      await Promise.all([
+        stopListening(closeActiveConnections),
+        mcp.stopAllBackgroundJobs(),
+        mcp.stopLanguageServers(),
+      ]);
+    } finally {
+      oauth.close();
+    }
   };
   server.stop = shutdown;
 
